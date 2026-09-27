@@ -37,8 +37,31 @@ pub const CELL_W: u16 = 6;
 pub const CELL_H: u16 = 3;
 pub const BOARD_W: u16 = 9 * CELL_W + 10; // 64
 pub const BOARD_H: u16 = 9 * CELL_H + 4; // 31 (horizontal guides only around boxes)
-pub const MIN_W: u16 = 67;
-pub const MIN_H: u16 = 48;
+
+// The number pad and action buttons sit beside the board rather than below
+// it, since terminals are almost always much wider than they are tall — that
+// keeps the required height pinned to the board's own height instead of
+// stacking on top of it.
+const DIGIT_W: u16 = 6;
+const DIGIT_GAP: u16 = 1;
+const DIGIT_GRID_W: u16 = 3 * DIGIT_W + 2 * DIGIT_GAP; // 20
+const DIGIT_GRID_H: u16 = 3 * CELL_H; // 9
+const BTN_W: u16 = 12;
+const BTN_GAP: u16 = 1;
+const BTN_GRID_W: u16 = 2 * BTN_W + BTN_GAP; // 25
+const BTN_GRID_H: u16 = 4 * CELL_H; // 12
+const PANEL_GROUP_GAP: u16 = 2;
+const PANEL_W: u16 = if DIGIT_GRID_W > BTN_GRID_W {
+    DIGIT_GRID_W
+} else {
+    BTN_GRID_W
+};
+const PANEL_H: u16 = DIGIT_GRID_H + PANEL_GROUP_GAP + BTN_GRID_H; // 23
+const PANEL_GAP: u16 = 3;
+const BLOCK_W: u16 = BOARD_W + PANEL_GAP + PANEL_W; // 92
+
+pub const MIN_W: u16 = BLOCK_W + 2;
+pub const MIN_H: u16 = 3 + BOARD_H; // header (2 lines) + divider + board
 
 // ------------------------------------------------------------ clicks
 
@@ -59,6 +82,9 @@ pub enum ClickAction {
     Close,
     WinNew,
     WinLevels,
+    /// Swallows a click on the modal backdrop so it can't reach whatever is
+    /// drawn underneath an open popup.
+    Blocked,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -262,8 +288,7 @@ fn draw_board(frame: &mut Frame, game: &Game, ox: u16, oy: u16, hits: &mut Vec<H
             if !hline && !vline {
                 continue;
             }
-            let on_box_v = (gx / (CELL_W + 1)) * (CELL_W + 1) == gx
-                && [0, 3 * (CELL_W + 1), 6 * (CELL_W + 1), 9 * (CELL_W + 1)].contains(&gx);
+            let on_box_v = [0, 3 * (CELL_W + 1), 6 * (CELL_W + 1), 9 * (CELL_W + 1)].contains(&gx);
             let cell = &mut buf[(x, y)];
             if hline && vline {
                 cell.set_char('┼');
@@ -674,6 +699,7 @@ pub fn render(frame: &mut Frame, st: &RenderState) -> Vec<Hit> {
         frame.render_widget(Paragraph::new(title).alignment(Alignment::Center), tr);
         draw_levels_popup(frame, area, st.menu_cursor, true, &mut hits);
         if st.show_help {
+            hits.push(Hit::new(area, ClickAction::Blocked));
             draw_help_popup(frame, area, &mut hits);
         }
         return hits;
@@ -698,24 +724,28 @@ pub fn render(frame: &mut Frame, st: &RenderState) -> Vec<Hit> {
         }
     }
 
-    // Board position: centered, with room for header + controls.
-    let board_y = area.y + 4;
-    let ox = area.x + area.width.saturating_sub(BOARD_W + 2) / 2 + 1;
+    // Board on the left, number pad + action buttons in a side panel on the
+    // right — centered together as one block. This pins the required
+    // terminal height to the board's own height (a fixed 31 rows) instead of
+    // stacking the panel underneath it, since terminals are almost always
+    // much wider than they are tall.
+    let board_y = area.y + 3;
+    let ox = area.x + area.width.saturating_sub(BLOCK_W) / 2;
     draw_board(frame, game, ox, board_y, &mut hits);
 
-    // Number bar under the board.
+    let panel_x = ox + BOARD_W + PANEL_GAP;
+    let panel_y = board_y + (BOARD_H - PANEL_H) / 2;
+
+    // Number pad: 3x3 grid of digit buttons.
     let remaining = game.remaining();
-    let bar_y = board_y + BOARD_H + 1;
-    let num_w: u16 = 5;
-    let gap: u16 = 1;
-    let total_w = 9 * num_w + 8 * gap;
-    let mut nx = area.x + area.width.saturating_sub(total_w) / 2;
     for d in 1..=9u8 {
+        let col = u16::from(d - 1) % 3;
+        let row = u16::from(d - 1) / 3;
         let r = Rect {
-            x: nx,
-            y: bar_y,
-            width: num_w,
-            height: 3,
+            x: panel_x + col * (DIGIT_W + DIGIT_GAP),
+            y: panel_y + row * CELL_H,
+            width: DIGIT_W,
+            height: CELL_H,
         };
         let left = remaining[d as usize];
         let done = left == 0;
@@ -752,15 +782,10 @@ pub fn render(frame: &mut Frame, st: &RenderState) -> Vec<Hit> {
                 height: 1,
             },
         );
-        nx += num_w + gap;
     }
 
-    // Action buttons, two rows of four.
-    let btn_w: u16 = 12;
-    let btn_gap: u16 = 1;
-    let rows_w = 4 * btn_w + 3 * btn_gap;
-    let mut bx = area.x + area.width.saturating_sub(rows_w) / 2;
-    let mut by = bar_y + 4;
+    // Action buttons: two columns of four, below the number pad.
+    let btn_y0 = panel_y + DIGIT_GRID_H + PANEL_GROUP_GAP;
     let specs = [
         Button {
             title: "Notes",
@@ -820,22 +845,19 @@ pub fn render(frame: &mut Frame, st: &RenderState) -> Vec<Hit> {
         },
     ];
     for (k, btn) in specs.iter().enumerate() {
-        if k == 4 {
-            by += 3;
-            bx = area.x + area.width.saturating_sub(rows_w) / 2;
-        }
+        let col = k as u16 % 2;
+        let row = k as u16 / 2;
         let r = Rect {
-            x: bx,
-            y: by,
-            width: btn_w,
-            height: 3,
+            x: panel_x + col * (BTN_W + BTN_GAP),
+            y: btn_y0 + row * CELL_H,
+            width: BTN_W,
+            height: CELL_H,
         };
         draw_button(frame, r, btn, &mut hits);
-        bx += btn_w + btn_gap;
     }
 
-    // Footer hints.
-    let footer_y = by + 3;
+    // Footer hints, directly under the board.
+    let footer_y = board_y + BOARD_H;
     if footer_y < area.y + area.height {
         let footer = Line::from(vec![
             Span::styled(" arrows/hjkl ", Style::default().fg(DIM)),
@@ -878,13 +900,17 @@ pub fn render(frame: &mut Frame, st: &RenderState) -> Vec<Hit> {
         );
     }
     if game.completed {
+        hits.push(Hit::new(area, ClickAction::Blocked));
         draw_win_popup(frame, area, game, &mut hits);
         if st.show_levels {
+            hits.push(Hit::new(area, ClickAction::Blocked));
             draw_levels_popup(frame, area, st.level_cursor, false, &mut hits);
         }
     } else if st.show_levels {
+        hits.push(Hit::new(area, ClickAction::Blocked));
         draw_levels_popup(frame, area, st.level_cursor, false, &mut hits);
     } else if game.paused {
+        hits.push(Hit::new(area, ClickAction::Blocked));
         let r = centered_rect(area, 34, 7);
         frame.render_widget(Clear, r);
         frame.render_widget(popup_block("Paused"), r);
@@ -909,6 +935,7 @@ pub fn render(frame: &mut Frame, st: &RenderState) -> Vec<Hit> {
         );
         hits.push(Hit::new(r, ClickAction::Pause));
     } else if st.show_help {
+        hits.push(Hit::new(area, ClickAction::Blocked));
         draw_help_popup(frame, area, &mut hits);
     }
 
@@ -985,7 +1012,10 @@ mod tests {
             .count();
         assert_eq!(cells, 81);
         for label in ["Notes", "Undo", "Hint", "Erase"] {
-            assert!(screen.contains(label), "{label} button missing at minimum size");
+            assert!(
+                screen.contains(label),
+                "{label} button missing at minimum size"
+            );
         }
     }
 
@@ -1086,9 +1116,9 @@ mod tests {
         let screen = text(&lines);
         assert!(screen.contains("Paused"));
         // Board hidden while paused: first cell interior is blank.
-        // Board origin for width 100: ox=18, row 0 at y=5..7, interior x=19..24.
-        let row: Vec<char> = lines[6].chars().collect();
-        assert!(row[19..25].iter().all(|&c| c == ' '));
+        // Board origin for width 100: ox=4, row 0 at y=4..6, interior x=5..10.
+        let row: Vec<char> = lines[5].chars().collect();
+        assert!(row[5..11].iter().all(|&c| c == ' '));
     }
 
     #[test]
@@ -1143,14 +1173,35 @@ mod tests {
             generating: false,
         };
         let (lines, _) = draw(&st, 100, 50);
-        // Cell (0,3) interior starts at x=18+1+3*7=40, rows y=5..7.
+        // Cell (0,3) interior starts at x=4+1+3*7=26, rows y=4..6.
         // The 5-char mini-grid row sits left-aligned in the 6-wide cell.
-        let top: Vec<char> = lines[5].chars().collect();
-        let mid: Vec<char> = lines[6].chars().collect();
-        let bot: Vec<char> = lines[7].chars().collect();
-        assert_eq!(top[40..46].iter().collect::<String>(), "1     ");
-        assert_eq!(mid[40..46].iter().collect::<String>(), "  5   ");
-        assert_eq!(bot[40..46].iter().collect::<String>(), "    9 ");
+        let top: Vec<char> = lines[4].chars().collect();
+        let mid: Vec<char> = lines[5].chars().collect();
+        let bot: Vec<char> = lines[6].chars().collect();
+        assert_eq!(top[26..32].iter().collect::<String>(), "1     ");
+        assert_eq!(mid[26..32].iter().collect::<String>(), "  5   ");
+        assert_eq!(bot[26..32].iter().collect::<String>(), "    9 ");
+    }
+
+    #[test]
+    fn open_popup_blocks_clicks_outside_its_own_rect() {
+        let game = test_game();
+        let st = RenderState {
+            game: Some(&game),
+            show_help: true,
+            show_levels: false,
+            level_cursor: 0,
+            menu_cursor: 0,
+            generating: false,
+        };
+        let (_, hits) = draw(&st, MIN_W, MIN_H);
+        // A board cell near the left edge, well outside the centered Help
+        // popup: must resolve to Blocked, not to the cell underneath.
+        let action = hit_at(&hits, 2, MIN_H - 2).expect("some hit under the backdrop");
+        assert!(
+            matches!(action, ClickAction::Blocked),
+            "click outside an open popup must be swallowed, got {action:?}"
+        );
     }
 
     #[test]

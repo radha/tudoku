@@ -71,11 +71,18 @@ impl App {
     }
 
     fn close_popups(&mut self) {
-        if self.show_help {
-            self.show_help = false;
-        } else if self.show_levels {
+        // Levels renders on top of Help when both are set, so close whichever
+        // is actually visible first.
+        if self.show_levels {
             self.show_levels = false;
+        } else if self.show_help {
+            self.show_help = false;
         }
+    }
+
+    fn open_level_picker(&mut self) {
+        self.level_cursor = self.last_level.index();
+        self.show_levels = true;
     }
 
     fn handle_key(&mut self, code: KeyCode, mods: KeyModifiers) -> bool {
@@ -190,7 +197,7 @@ impl App {
                     self.request_new_game(self.last_level);
                 }
                 KeyCode::Char('d') | KeyCode::Esc => {
-                    self.show_levels = true;
+                    self.open_level_picker();
                 }
                 _ => {}
             }
@@ -224,8 +231,7 @@ impl App {
             KeyCode::Char('h') => g.move_selection(0, -1),
             KeyCode::Char('l') => g.move_selection(0, 1),
             KeyCode::Char('d') => {
-                self.level_cursor = self.last_level.index();
-                self.show_levels = true;
+                self.open_level_picker();
             }
             KeyCode::Char('1'..='9') => {
                 let d = match code {
@@ -258,6 +264,10 @@ impl App {
         let Some(action) = hit_at(&self.hits, x, y) else {
             return false;
         };
+        self.dispatch_click(action)
+    }
+
+    fn dispatch_click(&mut self, action: ClickAction) -> bool {
         match action {
             ClickAction::Cell(r, c) => {
                 if let Some(g) = self.game.as_mut() {
@@ -300,8 +310,7 @@ impl App {
             }
             ClickAction::Level => {
                 if self.game.is_some() {
-                    self.level_cursor = self.last_level.index();
-                    self.show_levels = true;
+                    self.open_level_picker();
                 }
             }
             ClickAction::Pause => {
@@ -323,8 +332,9 @@ impl App {
                 self.request_new_game(self.last_level);
             }
             ClickAction::WinLevels => {
-                self.show_levels = true;
+                self.open_level_picker();
             }
+            ClickAction::Blocked => {}
         }
         false
     }
@@ -433,5 +443,57 @@ fn main() {
     if let Err(e) = run() {
         eprintln!("tudoku: {e}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn app_with_completed_game(level: Difficulty) -> App {
+        let mut app = App::new();
+        let (p, s) = Game::test_board();
+        let mut game = Game::new(level, p, s);
+        game.completed = true;
+        app.game = Some(game);
+        app.last_level = level;
+        app
+    }
+
+    #[test]
+    fn reopening_picker_from_win_screen_shows_current_difficulty() {
+        let mut app = app_with_completed_game(Difficulty::Easy);
+        // Simulate a picker that was opened and then cancelled on a
+        // different difficulty, leaving a stale cursor behind.
+        app.level_cursor = Difficulty::Expert.index();
+
+        app.handle_key(KeyCode::Char('d'), KeyModifiers::NONE);
+
+        assert!(app.show_levels);
+        assert_eq!(app.level_cursor, Difficulty::Easy.index());
+    }
+
+    #[test]
+    fn win_levels_click_shows_current_difficulty() {
+        let mut app = app_with_completed_game(Difficulty::Hard);
+        app.level_cursor = Difficulty::Zen.index();
+
+        app.dispatch_click(ClickAction::WinLevels);
+
+        assert!(app.show_levels);
+        assert_eq!(app.level_cursor, Difficulty::Hard.index());
+    }
+
+    #[test]
+    fn close_popups_closes_the_visible_one_first() {
+        let mut app = App::new();
+        app.show_help = true;
+        app.show_levels = true;
+        app.close_popups();
+        // Levels renders on top of Help; closing must clear it first.
+        assert!(!app.show_levels);
+        assert!(app.show_help);
+        app.close_popups();
+        assert!(!app.show_help);
     }
 }

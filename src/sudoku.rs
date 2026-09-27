@@ -129,30 +129,38 @@ fn candidates_mask(board: &[u8; CELLS], i: usize) -> u16 {
     (!used) & 0x3FE // keep bits 1..=9
 }
 
-/// Count solutions up to `limit` using MRV backtracking. Fast enough for
-/// uniqueness checks during generation.
-pub fn count_solutions(board: &mut [u8; CELLS], limit: u32) -> u32 {
-    // Find the empty cell with fewest candidates.
+/// Find the empty cell with the fewest candidates (MRV heuristic), stopping
+/// early once a cell with exactly one candidate is found. `None` means the
+/// board is full; a returned mask of `0` means that cell is unsolvable.
+fn find_mrv_cell(board: &[u8; CELLS]) -> Option<(usize, u16)> {
     let mut best: Option<(usize, u16, u32)> = None;
     for i in 0..CELLS {
         if board[i] == 0 {
             let mask = candidates_mask(board, i);
             let n = mask.count_ones();
             if n == 0 {
-                return 0;
+                return Some((i, 0));
             }
             match best {
                 None => best = Some((i, mask, n)),
                 Some((_, _, bn)) if n < bn => best = Some((i, mask, n)),
                 _ => {}
             }
-            if best.map(|b| b.2) == Some(1) {
+            if n == 1 {
                 break;
             }
         }
     }
-    let Some((cell, mask, _)) = best else {
-        return 1; // no empties: one solution found
+    best.map(|(i, mask, _)| (i, mask))
+}
+
+/// Count solutions up to `limit` using MRV backtracking. Fast enough for
+/// uniqueness checks during generation.
+pub fn count_solutions(board: &mut [u8; CELLS], limit: u32) -> u32 {
+    let (cell, mask) = match find_mrv_cell(board) {
+        None => return 1, // no empties: one solution found
+        Some((_, 0)) => return 0,
+        Some(cm) => cm,
     };
     let mut count = 0;
     for v in 1..=9u8 {
@@ -175,26 +183,10 @@ pub fn solve_one(board: &[u8; CELLS]) -> Option<[u8; CELLS]> {
 }
 
 fn solve_into(board: &mut [u8; CELLS]) -> bool {
-    let mut best: Option<(usize, u16, u32)> = None;
-    for i in 0..CELLS {
-        if board[i] == 0 {
-            let mask = candidates_mask(board, i);
-            let n = mask.count_ones();
-            if n == 0 {
-                return false;
-            }
-            match best {
-                None => best = Some((i, mask, n)),
-                Some((_, _, bn)) if n < bn => best = Some((i, mask, n)),
-                _ => {}
-            }
-            if best.map(|b| b.2) == Some(1) {
-                break;
-            }
-        }
-    }
-    let Some((cell, mask, _)) = best else {
-        return true;
+    let (cell, mask) = match find_mrv_cell(board) {
+        None => return true,
+        Some((_, 0)) => return false,
+        Some(cm) => cm,
     };
     for v in 1..=9u8 {
         if mask & (1 << v) != 0 {
@@ -265,31 +257,13 @@ pub fn shares_house(a: usize, b: usize) -> bool {
 
 fn fill_random<R: Rng>(board: &mut [u8; CELLS], rng: &mut R) -> bool {
     // MRV choice for speed.
-    let mut best: Option<(usize, Vec<u8>)> = None;
-    for i in 0..CELLS {
-        if board[i] == 0 {
-            let mask = candidates_mask(board, i);
-            let n = mask.count_ones();
-            if n == 0 {
-                return false;
-            }
-            let mut cands: Vec<u8> = (1..=9u8).filter(|v| mask & (1 << v) != 0).collect();
-            match &best {
-                None => {
-                    cands.shuffle(rng);
-                    best = Some((i, cands));
-                }
-                Some((_, bc)) if (cands.len() as u32) < bc.len() as u32 => {
-                    cands.shuffle(rng);
-                    best = Some((i, cands));
-                }
-                _ => {}
-            }
-        }
-    }
-    let Some((cell, cands)) = best else {
-        return true;
+    let (cell, mask) = match find_mrv_cell(board) {
+        None => return true,
+        Some((_, 0)) => return false,
+        Some(cm) => cm,
     };
+    let mut cands: Vec<u8> = (1..=9u8).filter(|v| mask & (1 << v) != 0).collect();
+    cands.shuffle(rng);
     for v in cands {
         board[cell] = v;
         if fill_random(board, rng) {

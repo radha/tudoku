@@ -128,6 +128,19 @@ impl Game {
         self.given[i] || self.hinted[i]
     }
 
+    /// Clear `digit` from the pencil marks of every peer of `i` (same row,
+    /// column, or box), returning the cleared cells' prior notes for undo.
+    fn clear_peer_notes(&mut self, i: usize, digit: u8) -> Vec<(usize, u16)> {
+        let mut peers = Vec::new();
+        for p in 0..CELLS {
+            if p != i && self.notes[p] & (1 << digit) != 0 && sudoku::shares_house(i, p) {
+                peers.push((p, self.notes[p]));
+                self.notes[p] &= !(1 << digit);
+            }
+        }
+        peers
+    }
+
     /// Enter a digit: place the value, or toggle a pencil mark in notes mode.
     pub fn enter_digit(&mut self, digit: u8) {
         if self.completed || self.paused {
@@ -137,9 +150,6 @@ impl Game {
         let i = self.selected_idx();
         if self.locked(i) {
             self.say("Locked cell");
-            if !self.given[i] {
-                // hinted cells stay as-is
-            }
             return;
         }
         if self.notes_mode {
@@ -159,20 +169,16 @@ impl Game {
             self.notes[i] = next;
             return;
         }
-        if self.values[i] == digit && self.solution[i] == digit {
-            return; // already correct, no-op
+        if self.values[i] == digit {
+            return; // already showing this digit, no-op
         }
-        let mut peers = Vec::new();
         // Auto-clean peer notes when a correct digit is placed.
         let correct = self.solution[i] == digit;
-        if correct {
-            for p in 0..CELLS {
-                if p != i && self.notes[p] & (1 << digit) != 0 && sudoku::shares_house(i, p) {
-                    peers.push((p, self.notes[p]));
-                    self.notes[p] &= !(1 << digit);
-                }
-            }
-        }
+        let peers = if correct {
+            self.clear_peer_notes(i, digit)
+        } else {
+            Vec::new()
+        };
         self.undo.push(UndoEntry {
             cell: i,
             prev_value: self.values[i],
@@ -254,13 +260,7 @@ impl Game {
             return;
         };
         let digit = self.solution[i];
-        let mut peers = Vec::new();
-        for p in 0..CELLS {
-            if p != i && self.notes[p] & (1 << digit) != 0 && sudoku::shares_house(i, p) {
-                peers.push((p, self.notes[p]));
-                self.notes[p] &= !(1 << digit);
-            }
-        }
+        let peers = self.clear_peer_notes(i, digit);
         self.undo.push(UndoEntry {
             cell: i,
             prev_value: self.values[i],
@@ -414,6 +414,17 @@ mod tests {
         assert_eq!(g.values[idx(0, 2)], 4);
         g.enter_digit(9);
         assert_eq!(g.values[idx(0, 2)], 4);
+    }
+
+    #[test]
+    fn repeated_wrong_digit_does_not_inflate_mistakes() {
+        let mut g = test_game();
+        // First empty cell is (0,2) with solution 4; 9 is wrong.
+        g.set_selected(0, 2);
+        g.enter_digit(9);
+        g.enter_digit(9);
+        g.enter_digit(9);
+        assert_eq!(g.mistakes, 1, "re-entering the same wrong digit is a no-op");
     }
 
     #[test]
