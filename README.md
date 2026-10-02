@@ -1,8 +1,8 @@
 # tudoku — offline Sudoku in your terminal
 
 A good-looking Sudoku TUI built with Rust and Ratatui. Puzzles are generated
-locally with a backtracking solver — no network access, ever. Play with the
-keyboard, the mouse, or both.
+locally and graded by a human-style logic solver — no network access, ever.
+Play with the keyboard, the mouse, or both.
 
 ## Run
 
@@ -10,9 +10,10 @@ keyboard, the mouse, or both.
 cargo run --release
 ```
 
-Requires a terminal at least 67x48 (the grid uses near-square cells).
-Mouse support needs a terminal that
-reports mouse clicks (most modern ones do).
+Requires a terminal at least **103x40** (every cell gets its own frame, and
+the grid is drawn square on typical 2:1 fonts). A 24-bit-color terminal
+such as Ghostty, kitty, WezTerm or iTerm2 looks best; mouse support needs
+one that reports clicks (most modern ones do).
 
 ## Difficulties
 
@@ -53,35 +54,40 @@ Delete that folder to start over.
 
 ### Keyboard
 
-| Key                        | Action                        |
-| -------------------------- | ----------------------------- |
-| arrows / hjkl              | move selection                |
-| 1-9                        | fill cell (or pencil mark)    |
-| n                          | toggle pencil-mark mode       |
-| 0 / Backspace / Delete / e | erase cell                    |
-| u / Ctrl+Z                 | undo                          |
-| H (capital h)              | hint (reveals and locks cell) |
-| N (capital n)              | new puzzle, same difficulty   |
-| d                          | difficulty picker             |
-| p                          | pause (hides board, stops timer) |
-| ? / F1                     | help                          |
-| q                          | quit                          |
-| Esc                        | close popup                   |
+| Key                            | Action                                    |
+| ------------------------------ | ----------------------------------------- |
+| arrows / hjkl                  | move selection                            |
+| 1-9                            | fill cell (or pencil mark in notes mode)  |
+| n                              | toggle pencil-mark mode                   |
+| 0 / x / e / Backspace / Delete | erase cell                                |
+| u / Ctrl+Z                     | undo                                      |
+| H (capital h)                  | hint: fills the next logical cell, locked |
+| N (capital n)                  | new puzzle, same difficulty               |
+| d                              | difficulty picker                         |
+| p                              | pause (hides board, stops timer)          |
+| ? / F1                         | help                                      |
+| q                              | quit (your game is saved)                 |
+| Esc                            | close popup / view the finished board     |
 
-On the difficulty picker: `1-5`, arrows/hjkl + `Enter`, or click.
+On the title screen: `c` or `Enter` continues a saved game; `1-5`,
+arrows/hjkl + `Enter`, or a click starts a level. Hints name the technique
+that finds the cell ("Hint: X-Wing, then a single"), so they teach as well
+as help.
 
 ### Mouse
 
-Everything is clickable: cells to select, the number bar to fill, and all
+Everything is clickable: cells to select, the number pad to fill, and all
 action buttons (Notes, Undo, Hint, Erase, New, Level, Pause, Help).
+Clicking outside a popup closes it, just like Esc.
 
 ## Features
 
-- 5 difficulty levels with unique-solution offline generation
-- Pencil marks, undo, hints (locked cells), erase
+- 5 difficulty levels graded by solving technique, all pure logic
+- Pencil marks, undo, hints that name their technique, erase
 - Mistake highlighting, remaining-digit counters, progress bar, timer
+- Autosave and resume, hint-free best times per level
 - Pause that hides the board and stops the clock
-- Win screen with time / mistakes / hints summary
+- Win screen with time / mistakes / hints and your record
 
 ## Self-checks
 

@@ -35,13 +35,13 @@ const POPUP_BG: Color = Color::Rgb(15, 23, 42);
 
 // ------------------------------------------------------------ sizing
 
-// Terminal glyph cells run ~2x taller than wide, so a 6x3 terminal-cell
-// interior renders near-square on most fonts. 6 wide is also the minimum
-// that still fits the 3x3 pencil-mark mini-grid ("d d d").
-pub const CELL_W: u16 = 6;
+// Every cell has its own frame, so the grid pitch is (CELL_W+1) x (CELL_H+1).
+// Terminal glyphs run ~2x taller than wide, so an 8x4 pitch looks square.
+// 7 wide also centers the pencil-mark mini-grid (" 1 2 3 ") on the value.
+pub const CELL_W: u16 = 7;
 pub const CELL_H: u16 = 3;
-pub const BOARD_W: u16 = 9 * CELL_W + 10; // 64
-pub const BOARD_H: u16 = 9 * CELL_H + 4; // 31 (horizontal guides only around boxes)
+pub const BOARD_W: u16 = 9 * (CELL_W + 1) + 1; // 73
+pub const BOARD_H: u16 = 9 * (CELL_H + 1) + 1; // 37
 
 // The number pad and action buttons sit beside the board rather than below
 // it, since terminals are almost always much wider than they are tall — that
@@ -63,10 +63,10 @@ const PANEL_W: u16 = if DIGIT_GRID_W > BTN_GRID_W {
 };
 const PANEL_H: u16 = DIGIT_GRID_H + PANEL_GROUP_GAP + BTN_GRID_H; // 23
 const PANEL_GAP: u16 = 3;
-const BLOCK_W: u16 = BOARD_W + PANEL_GAP + PANEL_W; // 92
+const BLOCK_W: u16 = BOARD_W + PANEL_GAP + PANEL_W; // 101
 
-pub const MIN_W: u16 = BLOCK_W + 2;
-pub const MIN_H: u16 = 3 + BOARD_H; // header (2 lines) + divider + board
+pub const MIN_W: u16 = BLOCK_W + 2; // 103: room for the row labels
+pub const MIN_H: u16 = 3 + BOARD_H; // 40: header (2 lines) + divider + board
 
 // ------------------------------------------------------------ clicks
 
@@ -105,15 +105,67 @@ fn centered_rect(area: Rect, w: u16, h: u16) -> Rect {
     area.centered(Constraint::Length(w), Constraint::Length(h))
 }
 
+/// Top-left of the board for a screen `area`: the board and side panel
+/// are centered together, under the header and divider.
+fn board_origin(area: Rect) -> (u16, u16) {
+    (area.x + area.width.saturating_sub(BLOCK_W) / 2, area.y + 3)
+}
+
+/// Top-left of a cell's interior.
 fn cell_screen(ox: u16, oy: u16, row: usize, col: usize) -> (u16, u16) {
     let x = ox + 1 + col as u16 * (CELL_W + 1);
-    let y = oy + 1 + row as u16 * CELL_H + u16::from(row >= 3) + u16::from(row >= 6);
+    let y = oy + 1 + row as u16 * (CELL_H + 1);
     (x, y)
 }
 
-fn is_hline(gy: u16) -> bool {
-    // One horizontal guide per 3-row box band: top, between bands, bottom.
-    gy.is_multiple_of(3 * CELL_H + 1)
+/// The grid line glyph at board offset `(gx, gy)`, and whether it is part
+/// of a heavy box line; `None` inside a cell. Light lines frame cells,
+/// heavy ones frame boxes and the board, and every crossing gets the
+/// junction glyph that joins exactly the strokes meeting there.
+fn grid_glyph(gx: u16, gy: u16) -> Option<(char, bool)> {
+    let on_v = gx.is_multiple_of(CELL_W + 1);
+    let on_h = gy.is_multiple_of(CELL_H + 1);
+    let (c, r) = (gx / (CELL_W + 1), gy / (CELL_H + 1));
+    let heavy_v = on_v && c.is_multiple_of(3);
+    let heavy_h = on_h && r.is_multiple_of(3);
+    let glyph = match (on_v, on_h) {
+        (false, false) => return None,
+        (true, false) => {
+            if heavy_v {
+                '┃'
+            } else {
+                '│'
+            }
+        }
+        (false, true) => {
+            if heavy_h {
+                '━'
+            } else {
+                '─'
+            }
+        }
+        (true, true) => match (c, r) {
+            (0, 0) => '┏',
+            (9, 0) => '┓',
+            (0, 9) => '┗',
+            (9, 9) => '┛',
+            (_, 0) if heavy_v => '┳',
+            (_, 0) => '┯',
+            (_, 9) if heavy_v => '┻',
+            (_, 9) => '┷',
+            (0, _) if heavy_h => '┣',
+            (0, _) => '┠',
+            (9, _) if heavy_h => '┫',
+            (9, _) => '┨',
+            _ => match (heavy_v, heavy_h) {
+                (true, true) => '╋',
+                (true, false) => '╂',
+                (false, true) => '┿',
+                (false, false) => '┼',
+            },
+        },
+    };
+    Some((glyph, heavy_v || heavy_h))
 }
 
 // ------------------------------------------------------------ board
@@ -194,12 +246,12 @@ fn draw_board(frame: &mut Frame, game: &Game, ox: u16, oy: u16, hits: &mut Vec<H
                         .set_style(Style::default().fg(RED).bg(bg).add_modifier(Modifier::BOLD));
                 }
             } else {
-                // Pencil marks as a 3x3 mini-grid filling the cell.
+                // Pencil marks as a 3x3 mini-grid, centered on the value spot.
                 let note_style = Style::default().fg(DIM).bg(bg).add_modifier(Modifier::DIM);
                 for d in 1..=9u8 {
                     if game.notes[i] & (1 << d) != 0 {
                         let k = u16::from(d - 1);
-                        buf[(x + 2 * (k % 3), y + k / 3)]
+                        buf[(x + 1 + 2 * (k % 3), y + k / 3)]
                             .set_char(char::from(b'0' + d))
                             .set_style(note_style);
                     }
@@ -215,46 +267,13 @@ fn draw_board(frame: &mut Frame, game: &Game, ox: u16, oy: u16, hits: &mut Vec<H
 
     // Grid lines.
     for gy in 0..BOARD_H {
-        let y = oy + gy;
-        let hline = is_hline(gy);
         for gx in 0..BOARD_W {
-            let x = ox + gx;
-            let vline = gx % (CELL_W + 1) == 0;
-            if !hline && !vline {
-                continue;
-            }
-            let on_box_v = [0, 3 * (CELL_W + 1), 6 * (CELL_W + 1), 9 * (CELL_W + 1)].contains(&gx);
-            let cell = &mut buf[(x, y)];
-            if hline && vline {
-                cell.set_char('┼');
-                cell.set_fg(if on_box_v { GRID_BOX } else { GRID_THIN });
-            } else if hline {
-                cell.set_char('─');
-                cell.set_fg(GRID_BOX);
-            } else {
-                cell.set_char('│');
-                cell.set_fg(if on_box_v { GRID_BOX } else { GRID_THIN });
-            }
-            if hline {
-                // Thicken box guides with bold. Every hline is a box guide.
-                cell.set_style(Style::default().fg(GRID_BOX).add_modifier(Modifier::BOLD));
-                if vline && !on_box_v {
-                    cell.set_char('┿');
-                } else if vline {
-                    cell.set_char('╂');
+            if let Some((glyph, heavy)) = grid_glyph(gx, gy) {
+                buf[(ox + gx, oy + gy)].set_char(glyph).set_fg(if heavy {
+                    GRID_BOX
                 } else {
-                    cell.set_char('═');
-                }
-            }
-            // Outer corners.
-            if (gx == 0 || gx == BOARD_W - 1) && (gy == 0 || gy == BOARD_H - 1) {
-                let ch = match (gx == 0, gy == 0) {
-                    (true, true) => '╔',
-                    (false, true) => '╗',
-                    (true, false) => '╚',
-                    (false, false) => '╝',
-                };
-                cell.set_char(ch);
+                    GRID_THIN
+                });
             }
         }
     }
@@ -309,7 +328,7 @@ fn header_lines(game: &Game, best: Option<Duration>) -> (Line<'static>, Line<'st
     let diff = game.difficulty;
     let (done, total) = game.progress();
     let bar_w = 14;
-    let filled = done * bar_w / total;
+    let filled = done * bar_w / total.max(1);
     let bar: String = "█".repeat(filled) + &"░".repeat(bar_w - filled);
     let top = Line::from(vec![
         Span::styled(
@@ -470,17 +489,17 @@ fn draw_levels_menu(
 }
 
 fn draw_help(frame: &mut Frame, area: Rect) {
-    let (_, inner) = popup(frame, area, 56, 21, "How to play  (?)");
     let rows = [
         ("Move", "arrows / hjkl, or click a cell"),
         ("Fill", "1-9  (click a cell, then a number)"),
         ("Notes", "n toggles pencil marks, then 1-9"),
         ("Erase", "0 / x / e / Backspace / Delete"),
         ("Undo", "u  or Ctrl+Z"),
-        ("Hint", "H (capital) — reveals & locks a cell"),
+        ("Hint", "H (capital) — fills the next logical cell"),
         ("New", "N (capital) — fresh puzzle, same level"),
         ("Level", "d — change difficulty"),
         ("Pause", "p — hides the board, stops timer"),
+        ("Saves", "automatic — Continue from the title screen"),
         ("Quit", "q    •    close popups: Esc"),
         ("Mouse", "click cells, the number pad, buttons"),
     ];
@@ -505,6 +524,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         " press Esc or click anywhere to close ",
         Style::default().fg(DIM).add_modifier(Modifier::DIM),
     )));
+    let (_, inner) = popup(frame, area, 56, lines.len() as u16 + 2, "How to play  (?)");
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
@@ -783,41 +803,34 @@ fn draw_panel(frame: &mut Frame, game: &Game, x: u16, y: u16, hits: &mut Vec<Hit
 }
 
 fn draw_game(frame: &mut Frame, area: Rect, app: &App, game: &Game, hits: &mut Vec<Hit>) {
-    // Header (2 lines).
-    let best = app.stats.level(game.difficulty).best();
-    let (top, bottom) = header_lines(game, best);
-    frame.render_widget(
-        Paragraph::new(vec![top, bottom]),
-        Rect::new(area.x, area.y, area.width, 2),
-    );
-    // Divider.
-    let divider = Rect::new(area.x, area.y + 2, area.width, 1);
-    frame.render_widget(
-        Paragraph::new("─".repeat(usize::from(area.width))).style(Style::default().fg(GRID_THIN)),
-        divider,
-    );
-
     // Board on the left, number pad + action buttons in a side panel on the
-    // right — centered together as one block. This pins the required
+    // right, centered together as one block. This pins the required
     // terminal height to the board's own height instead of stacking the
     // panel underneath it, since terminals are almost always much wider
-    // than they are tall.
-    let board_y = area.y + 3;
-    let ox = area.x + area.width.saturating_sub(BLOCK_W) / 2;
-    draw_board(frame, game, ox, board_y, hits);
+    // than they are tall. The header lines up with the board's left edge.
+    let (ox, oy) = board_origin(area);
+    let header = Rect::new(ox, area.y, area.right() - ox, 2);
+    let best = app.stats.level(game.difficulty).best();
+    let (top, bottom) = header_lines(game, best);
+    frame.render_widget(Paragraph::new(vec![top, bottom]), header);
+    frame.render_widget(
+        Paragraph::new("─".repeat(usize::from(BLOCK_W))).style(Style::default().fg(GRID_THIN)),
+        Rect::new(ox, area.y + 2, BLOCK_W, 1),
+    );
+
+    draw_board(frame, game, ox, oy, hits);
     let panel_x = ox + BOARD_W + PANEL_GAP;
-    let panel_y = board_y + (BOARD_H - PANEL_H) / 2;
+    let panel_y = oy + (BOARD_H - PANEL_H) / 2;
     draw_panel(frame, game, panel_x, panel_y, hits);
 
     // Footer hints, directly under the board.
-    let footer_y = board_y + BOARD_H;
+    let footer_y = oy + BOARD_H;
     if footer_y < area.bottom() {
         let footer =
             "arrows/hjkl  1-9 fill  n notes  u undo  H hint  e erase  d level  ? help  q quit";
         frame.render_widget(
-            Paragraph::new(Line::styled(footer, Style::default().fg(DIM)))
-                .alignment(Alignment::Center),
-            Rect::new(area.x, footer_y, area.width, 1),
+            Paragraph::new(Line::styled(footer, Style::default().fg(DIM))),
+            Rect::new(ox, footer_y, area.right() - ox, 1),
         );
     }
 }
@@ -885,22 +898,70 @@ mod tests {
         lines.join("\n")
     }
 
+    /// Screen width for tests: a little roomier than the minimum.
+    const W: u16 = 110;
+
     fn cell_hits(hits: &[Hit]) -> usize {
         hits.iter()
             .filter(|h| matches!(h.action, Some(Action::Board(BoardAction::Select(..)))))
             .count()
     }
 
+    /// Text row `dy` of a cell's interior, as drawn `W` columns wide.
+    fn cell_row(lines: &[String], row: usize, col: usize, dy: u16) -> String {
+        let (ox, oy) = board_origin(Rect::new(0, 0, W, 50));
+        let (x, y) = cell_screen(ox, oy, row, col);
+        lines[usize::from(y + dy)]
+            .chars()
+            .skip(usize::from(x))
+            .take(usize::from(CELL_W))
+            .collect()
+    }
+
+    /// The glyph drawn at board offset `(gx, gy)`, `W` columns wide.
+    fn board_char(lines: &[String], gx: u16, gy: u16) -> char {
+        let (ox, oy) = board_origin(Rect::new(0, 0, W, 50));
+        let line = &lines[usize::from(oy + gy)];
+        line.chars().nth(usize::from(ox + gx)).unwrap()
+    }
+
     #[test]
     fn cells_render_square_on_typical_fonts() {
-        // Terminal glyph cells run ~2x taller than wide, so CELL_W should be
-        // ~2x CELL_H for a visually square grid. Tolerate ±15% for fonts
-        // whose glyph aspect strays from exactly 2:1.
-        let ratio = f32::from(CELL_W) / f32::from(CELL_H);
+        // Terminal glyph cells run ~2x taller than wide, so the grid pitch
+        // (a cell plus its line) should be ~2x as wide as it is tall.
+        // Tolerate ±15% for fonts whose glyph aspect strays from 2:1.
+        let ratio = f32::from(CELL_W + 1) / f32::from(CELL_H + 1);
         assert!(
             (ratio - 2.0).abs() <= 0.3,
-            "cell aspect {CELL_W}x{CELL_H} is not square on ~2:1 fonts"
+            "cell pitch {}x{} is not square on ~2:1 fonts",
+            CELL_W + 1,
+            CELL_H + 1
         );
+    }
+
+    #[test]
+    fn grid_lines_use_matching_junctions() {
+        let (lines, _) = draw(&app_with_game(), W, 50);
+        let pitch_x = CELL_W + 1;
+        let pitch_y = CELL_H + 1;
+        let at = |cx: u16, cy: u16| board_char(&lines, cx * pitch_x, cy * pitch_y);
+        // Corners and edge junctions: T-pieces, never crosses poking out.
+        assert_eq!(at(0, 0), '┏');
+        assert_eq!(at(9, 9), '┛');
+        assert_eq!(at(1, 0), '┯', "cell line meets the top edge");
+        assert_eq!(at(3, 0), '┳', "box line meets the top edge");
+        assert_eq!(at(0, 1), '┠');
+        assert_eq!(at(9, 3), '┫');
+        // Inside: every mix of light cell lines and heavy box lines.
+        assert_eq!(at(1, 1), '┼');
+        assert_eq!(at(3, 1), '╂');
+        assert_eq!(at(1, 3), '┿');
+        assert_eq!(at(3, 3), '╋');
+        // Every row has its own line, even inside a box.
+        assert_eq!(board_char(&lines, 1, pitch_y), '─');
+        assert_eq!(board_char(&lines, 1, 3 * pitch_y), '━');
+        assert_eq!(board_char(&lines, pitch_x, 1), '│');
+        assert_eq!(board_char(&lines, 3 * pitch_x, 1), '┃');
     }
 
     #[test]
@@ -924,7 +985,7 @@ mod tests {
     #[test]
     fn full_game_screen_has_board_and_controls() {
         let app = app_with_game();
-        let (lines, hits) = draw(&app, 100, 50);
+        let (lines, hits) = draw(&app, W, 50);
         let screen = text(&lines);
         assert!(screen.contains("TUDOKU"), "title missing");
         assert!(screen.contains("Easy"), "difficulty missing");
@@ -942,7 +1003,7 @@ mod tests {
     #[test]
     fn title_screen_lists_all_difficulties() {
         let app = App::new(Store::none());
-        let (lines, hits) = draw(&app, 100, 50);
+        let (lines, hits) = draw(&app, W, 50);
         let screen = text(&lines);
         for d in Difficulty::ALL {
             assert!(screen.contains(d.name()), "{d:?} missing on title");
@@ -961,25 +1022,25 @@ mod tests {
     fn win_and_pause_overlays_render() {
         let mut app = app_with_game();
         app.overlays.push(Overlay::Won);
-        let (lines, _) = draw(&app, 100, 50);
+        let (lines, _) = draw(&app, W, 50);
         assert!(text(&lines).contains("Solved!"));
 
         let mut app = app_with_game();
         app.pause();
-        let (lines, _) = draw(&app, 100, 50);
+        let (lines, _) = draw(&app, W, 50);
         let screen = text(&lines);
         assert!(screen.contains("Paused"));
-        // Board hidden while paused: first cell interior is blank.
-        // Board origin for width 100: ox=4, row 0 at y=4..6, interior x=5..10.
-        let row: Vec<char> = lines[5].chars().collect();
-        assert!(row[5..11].iter().all(|&c| c == ' '));
+        // Board hidden while paused: the given 5 at (0,0) isn't drawn.
+        assert_eq!(cell_row(&lines, 0, 0, 1), " ".repeat(usize::from(CELL_W)));
+        let (lines, _) = draw(&app_with_game(), W, 50);
+        assert_eq!(cell_row(&lines, 0, 0, 1), "   5   ", "and is when unpaused");
     }
 
     #[test]
     fn win_popup_action_buttons_are_visible() {
         let mut app = app_with_game();
         app.overlays.push(Overlay::Won);
-        let (lines, hits) = draw(&app, 100, 50);
+        let (lines, hits) = draw(&app, W, 50);
         let screen = text(&lines);
         assert!(screen.contains("New"), "win popup New button text missing");
         assert!(
@@ -1014,15 +1075,12 @@ mod tests {
         game.enter_digit(5);
         game.enter_digit(9);
         game.toggle_notes_mode();
-        let (lines, _) = draw(&app, 100, 50);
-        // Cell (0,3) interior starts at x=4+1+3*7=26, rows y=4..6.
-        // The 5-char mini-grid row sits left-aligned in the 6-wide cell.
-        let top: Vec<char> = lines[4].chars().collect();
-        let mid: Vec<char> = lines[5].chars().collect();
-        let bot: Vec<char> = lines[6].chars().collect();
-        assert_eq!(top[26..32].iter().collect::<String>(), "1     ");
-        assert_eq!(mid[26..32].iter().collect::<String>(), "  5   ");
-        assert_eq!(bot[26..32].iter().collect::<String>(), "    9 ");
+        let (lines, _) = draw(&app, W, 50);
+        // The mini-grid is centered, so its middle column (2, 5, 8) lines
+        // up with where a placed digit goes.
+        assert_eq!(cell_row(&lines, 0, 3, 0), " 1     ");
+        assert_eq!(cell_row(&lines, 0, 3, 1), "   5   ");
+        assert_eq!(cell_row(&lines, 0, 3, 2), "     9 ");
     }
 
     #[test]
@@ -1050,7 +1108,7 @@ mod tests {
     fn dealing_blocks_every_click() {
         let mut app = app_with_game();
         app.dealing = Some(Difficulty::Hard);
-        let (lines, hits) = draw(&app, 100, 50);
+        let (lines, hits) = draw(&app, W, 50);
         assert!(text(&lines).contains("Dealing"));
         for (x, y) in [(2, 48), (10, 8), (50, 25)] {
             assert_eq!(hit_at(&hits, x, y), None);
@@ -1061,7 +1119,7 @@ mod tests {
     fn help_popup_lists_controls() {
         let mut app = app_with_game();
         app.overlays.push(Overlay::Help);
-        let (lines, _) = draw(&app, 100, 50);
+        let (lines, _) = draw(&app, W, 50);
         let screen = text(&lines);
         assert!(screen.contains("How to play"));
         assert!(screen.contains("Hint"));

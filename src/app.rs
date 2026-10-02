@@ -411,7 +411,7 @@ mod tests {
     }
 
     fn render(app: &App) -> (String, Vec<ui::Hit>) {
-        let mut term = Terminal::new(TestBackend::new(100, 44)).unwrap();
+        let mut term = Terminal::new(TestBackend::new(110, 44)).unwrap();
         let mut hits = Vec::new();
         term.draw(|f| hits = ui::render(f, app)).unwrap();
         let buf = term.backend().buffer();

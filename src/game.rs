@@ -268,17 +268,17 @@ impl Game {
         }
         let s = self.selected_idx();
         let (i, msg) = if !self.locked(s) && !self.is_correct(s) {
-            (s, "Hint placed (locked)".to_string())
+            (s, "Hint placed".to_string())
         } else if let Some((i, _, technique)) = logic::next_placement(&self.correct_values()) {
             let msg = if technique <= Technique::HiddenSingle {
-                format!("Hint: {} (locked)", technique.name())
+                format!("Hint: {}", technique.name())
             } else {
-                format!("Hint: {}, then a single (locked)", technique.name())
+                format!("Hint: {}, then a single", technique.name())
             };
             (i, msg)
         } else if let Some(i) = (0..CELLS).find(|&i| !self.is_correct(i)) {
             // Logic is stuck (it shouldn't be, on a dealt puzzle).
-            (i, "Hint placed (locked)".to_string())
+            (i, "Hint placed".to_string())
         } else {
             self.say("Nothing to reveal");
             return;
@@ -332,9 +332,11 @@ impl Game {
         v != self.solution[i] || peers(i).any(|p| self.values[p] == v)
     }
 
+    /// Blanks filled correctly so far, out of the puzzle's blanks.
     pub fn progress(&self) -> (usize, usize) {
-        let done = (0..CELLS).filter(|&i| self.is_correct(i)).count();
-        (done, CELLS)
+        let open = || (0..CELLS).filter(|&i| !self.given[i]);
+        let done = open().filter(|&i| self.is_correct(i)).count();
+        (done, open().count())
     }
 
     /// Show a transient message in the header.
@@ -614,7 +616,7 @@ mod tests {
         solve_all(&mut g);
         assert!(g.completed);
         let (done, total) = g.progress();
-        assert_eq!((done, total), (81, 81));
+        assert_eq!((done, total), (51, 51), "counts the 51 blanks, not givens");
         assert_eq!(g.remaining(), [0; 10]);
     }
 
