@@ -1,499 +1,267 @@
 //! tudoku — an offline Sudoku TUI.
 //!
 //! Keyboard and mouse friendly: arrows/hjkl + 1-9, or click cells,
-//! the number bar, and the action buttons. All puzzles are generated
+//! the number pad, and the action buttons. All puzzles are generated
 //! locally; there is no network access at any point.
 
+mod app;
+mod deal;
 mod game;
+mod logic;
+mod store;
 mod sudoku;
 mod ui;
 
-use std::io::{self, Stdout};
-use std::time::Duration;
+use std::io::{self, IsTerminal, Stdout};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, TryRecvError};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind},
+    cursor,
+    event::{
+        self, DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture,
+        Event, KeyEventKind, MouseButton, MouseEventKind,
+    },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use rand::SeedableRng;
 use ratatui::{Terminal, backend::CrosstermBackend};
 
+use crate::app::App;
+use crate::deal::{Deal, Difficulty};
 use crate::game::Game;
-use crate::sudoku::Difficulty;
-use crate::ui::{ClickAction, Hit, RenderState, hit_at};
+use crate::store::Store;
 
-struct App {
-    game: Option<Game>,
-    show_help: bool,
-    show_levels: bool,
-    level_cursor: usize,
-    menu_cursor: usize,
-    generating: bool,
-    pending_level: Option<Difficulty>,
-    last_level: Difficulty,
-    hits: Vec<Hit>,
-}
+/// Raw mode, alternate screen and mouse capture for as long as it lives.
+/// Dropping it restores the terminal, so an early `?` return can't leave
+/// the shell in raw mode.
+struct TerminalGuard;
 
-impl App {
-    fn new() -> Self {
-        Self {
-            game: None,
-            show_help: false,
-            show_levels: false,
-            level_cursor: 1,
-            menu_cursor: 1,
-            generating: false,
-            pending_level: None,
-            last_level: Difficulty::Medium,
-            hits: Vec::new(),
-        }
-    }
-
-    fn request_new_game(&mut self, level: Difficulty) {
-        self.last_level = level;
-        self.pending_level = Some(level);
-        self.generating = true;
-        self.show_levels = false;
-        self.show_help = false;
-    }
-
-    fn finish_pending(&mut self) {
-        if let Some(level) = self.pending_level.take() {
-            // Seeded RNG is not needed; real randomness is fine and fully offline.
-            let mut rng = rand::rng();
-            let (puzzle, solution) = sudoku::generate(level, &mut rng);
-            self.game = Some(Game::new(level, puzzle, solution));
-            self.level_cursor = level.index();
-            self.menu_cursor = level.index();
-            self.generating = false;
-        }
-    }
-
-    fn close_popups(&mut self) {
-        // Levels renders on top of Help when both are set, so close whichever
-        // is actually visible first.
-        if self.show_levels {
-            self.show_levels = false;
-        } else if self.show_help {
-            self.show_help = false;
-        }
-    }
-
-    fn open_level_picker(&mut self) {
-        self.level_cursor = self.last_level.index();
-        self.show_levels = true;
-    }
-
-    fn handle_key(&mut self, code: KeyCode, mods: KeyModifiers) -> bool {
-        // Returns true when the app should quit.
-        if mods.contains(KeyModifiers::CONTROL) {
-            match code {
-                KeyCode::Char('c') | KeyCode::Char('q') => return true,
-                KeyCode::Char('z') => {
-                    if !self.show_levels
-                        && !self.show_help
-                        && let Some(g) = self.game.as_mut()
-                    {
-                        g.undo();
-                    }
-                    return false;
-                }
-                _ => return false,
-            }
-        }
-        match code {
-            KeyCode::Char('q') => {
-                // Lowercase q quits from anywhere except the title screen,
-                // where it also quits. (Shift+Q is covered below as 'Q'.)
-                return true;
-            }
-            KeyCode::Char('Q') => return true,
-            _ => {}
-        }
-
-        // Title screen (no puzzle yet).
-        if self.game.is_none() {
-            match code {
-                KeyCode::Up | KeyCode::Char('k') => {
-                    let n = Difficulty::all().len();
-                    self.menu_cursor = (self.menu_cursor + n - 1) % n;
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    let n = Difficulty::all().len();
-                    self.menu_cursor = (self.menu_cursor + 1) % n;
-                }
-                KeyCode::Char('1'..='5') => {
-                    let i = match code {
-                        KeyCode::Char(c) => (c as u8 - b'1') as usize,
-                        _ => 0,
-                    };
-                    self.request_new_game(Difficulty::from_index(i));
-                }
-                KeyCode::Enter | KeyCode::Char(' ') => {
-                    self.request_new_game(Difficulty::from_index(self.menu_cursor));
-                }
-                KeyCode::Char('?') | KeyCode::F(1) => {
-                    self.show_help = !self.show_help;
-                }
-                KeyCode::Esc => {
-                    self.show_help = false;
-                }
-                _ => {}
-            }
-            return false;
-        }
-
-        let completed = self.game.as_ref().map(|g| g.completed).unwrap_or(false);
-
-        // Difficulty picker popup.
-        if self.show_levels {
-            match code {
-                KeyCode::Up | KeyCode::Char('k') => {
-                    let n = Difficulty::all().len();
-                    self.level_cursor = (self.level_cursor + n - 1) % n;
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    let n = Difficulty::all().len();
-                    self.level_cursor = (self.level_cursor + 1) % n;
-                }
-                KeyCode::Char('1'..='5') => {
-                    let i = match code {
-                        KeyCode::Char(c) => (c as u8 - b'1') as usize,
-                        _ => 0,
-                    };
-                    self.request_new_game(Difficulty::from_index(i));
-                }
-                KeyCode::Enter | KeyCode::Char(' ') => {
-                    self.request_new_game(Difficulty::from_index(self.level_cursor));
-                }
-                KeyCode::Esc | KeyCode::Char('d') => {
-                    self.show_levels = false;
-                }
-                _ => {}
-            }
-            return false;
-        }
-
-        // Help popup.
-        if self.show_help {
-            match code {
-                KeyCode::Esc
-                | KeyCode::Char('?')
-                | KeyCode::F(1)
-                | KeyCode::Enter
-                | KeyCode::Char(' ') => {
-                    self.show_help = false;
-                }
-                _ => {}
-            }
-            return false;
-        }
-
-        // Win popup open.
-        if completed {
-            match code {
-                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Enter => {
-                    self.request_new_game(self.last_level);
-                }
-                KeyCode::Char('d') | KeyCode::Esc => {
-                    self.open_level_picker();
-                }
-                _ => {}
-            }
-            return false;
-        }
-
-        // Paused: most keys ignored.
-        if self.game.as_ref().map(|g| g.paused).unwrap_or(false) {
-            match code {
-                KeyCode::Char('p') | KeyCode::Esc | KeyCode::Enter | KeyCode::Char(' ') => {
-                    if let Some(g) = self.game.as_mut() {
-                        g.set_paused(false);
-                    }
-                }
-                KeyCode::F(1) => {
-                    self.show_help = true;
-                }
-                _ => {}
-            }
-            return false;
-        }
-
-        let g = self.game.as_mut().expect("game exists");
-        match code {
-            KeyCode::Up => g.move_selection(-1, 0),
-            KeyCode::Down => g.move_selection(1, 0),
-            KeyCode::Left => g.move_selection(0, -1),
-            KeyCode::Right => g.move_selection(0, 1),
-            KeyCode::Char('k') => g.move_selection(-1, 0),
-            KeyCode::Char('j') => g.move_selection(1, 0),
-            KeyCode::Char('h') => g.move_selection(0, -1),
-            KeyCode::Char('l') => g.move_selection(0, 1),
-            KeyCode::Char('d') => {
-                self.open_level_picker();
-            }
-            KeyCode::Char('1'..='9') => {
-                let d = match code {
-                    KeyCode::Char(c) => c as u8 - b'0',
-                    _ => 0,
-                };
-                g.enter_digit(d);
-            }
-            KeyCode::Char('0')
-            | KeyCode::Char('x')
-            | KeyCode::Char('X')
-            | KeyCode::Backspace
-            | KeyCode::Delete => g.erase(),
-            KeyCode::Char('e') | KeyCode::Char('E') => g.erase(),
-            KeyCode::Char('n') => g.toggle_notes_mode(),
-            KeyCode::Char('N') => self.request_new_game(self.last_level),
-            KeyCode::Char('u') | KeyCode::Char('U') => g.undo(),
-            KeyCode::Char('H') => g.hint(),
-            KeyCode::Char('p') | KeyCode::Char('P') => g.set_paused(true),
-            KeyCode::Char('?') | KeyCode::F(1) => {
-                self.show_help = true;
-            }
-            KeyCode::Esc => {}
-            _ => {}
-        }
-        false
-    }
-
-    fn handle_click(&mut self, x: u16, y: u16) -> bool {
-        let Some(action) = hit_at(&self.hits, x, y) else {
-            return false;
-        };
-        self.dispatch_click(action)
-    }
-
-    fn dispatch_click(&mut self, action: ClickAction) -> bool {
-        match action {
-            ClickAction::Cell(r, c) => {
-                if let Some(g) = self.game.as_mut() {
-                    if !g.paused && !g.completed {
-                        g.set_selected(r, c);
-                    } else if g.paused {
-                        g.set_paused(false);
-                    }
-                }
-            }
-            ClickAction::Digit(d) => {
-                if let Some(g) = self.game.as_mut() {
-                    g.enter_digit(d);
-                }
-            }
-            ClickAction::Notes => {
-                if let Some(g) = self.game.as_mut() {
-                    g.toggle_notes_mode();
-                }
-            }
-            ClickAction::Undo => {
-                if let Some(g) = self.game.as_mut() {
-                    g.undo();
-                }
-            }
-            ClickAction::Hint => {
-                if let Some(g) = self.game.as_mut() {
-                    g.hint();
-                }
-            }
-            ClickAction::Erase => {
-                if let Some(g) = self.game.as_mut() {
-                    g.erase();
-                }
-            }
-            ClickAction::New => {
-                if self.game.is_some() {
-                    self.request_new_game(self.last_level);
-                }
-            }
-            ClickAction::Level => {
-                if self.game.is_some() {
-                    self.open_level_picker();
-                }
-            }
-            ClickAction::Pause => {
-                if let Some(g) = self.game.as_mut() {
-                    g.set_paused(!g.paused);
-                }
-            }
-            ClickAction::Help => {
-                self.show_help = true;
-            }
-            ClickAction::LevelChoice(i) => {
-                self.request_new_game(Difficulty::from_index(i));
-            }
-            ClickAction::MenuChoice(i) => {
-                self.request_new_game(Difficulty::from_index(i));
-            }
-            ClickAction::Close => self.close_popups(),
-            ClickAction::WinNew => {
-                self.request_new_game(self.last_level);
-            }
-            ClickAction::WinLevels => {
-                self.open_level_picker();
-            }
-            ClickAction::Blocked => {}
-        }
-        false
+impl TerminalGuard {
+    fn enter() -> io::Result<Self> {
+        enable_raw_mode()?;
+        let guard = TerminalGuard;
+        execute!(
+            io::stdout(),
+            EnterAlternateScreen,
+            EnableMouseCapture,
+            EnableFocusChange
+        )?;
+        Ok(guard)
     }
 }
 
-fn setup_terminal() -> io::Result<Terminal<CrosstermBackend<Stdout>>> {
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, event::EnableMouseCapture)?;
-    let backend = CrosstermBackend::new(stdout);
-    Terminal::new(backend)
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        restore_terminal();
+    }
 }
 
-fn restore_terminal(term: &mut Terminal<CrosstermBackend<Stdout>>) {
+/// Leave TUI mode. Only the first call does anything: a second
+/// alternate-screen exit would jump the cursor back over whatever was
+/// printed after the first (like a panic message).
+fn restore_terminal() {
+    static RESTORED: AtomicBool = AtomicBool::new(false);
+    if RESTORED.swap(true, Ordering::SeqCst) {
+        return;
+    }
     let _ = execute!(
-        term.backend_mut(),
-        event::DisableMouseCapture,
-        LeaveAlternateScreen
+        io::stdout(),
+        DisableFocusChange,
+        DisableMouseCapture,
+        LeaveAlternateScreen,
+        cursor::Show
     );
     let _ = disable_raw_mode();
 }
 
+/// Restore the terminal before a main-thread panic message prints, so it
+/// lands on the normal screen instead of vanishing with the alternate one.
+/// Panics on the dealing threads leave the screen alone: the main thread
+/// survives them and deals the puzzle itself.
+fn install_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if thread::current().name() == Some("main") {
+            restore_terminal();
+        }
+        default_hook(info);
+    }));
+}
+
+/// SIGTERM or SIGINT (e.g. `kill`) asks the event loop to stop, so the
+/// game is saved and the terminal restored on the way out. SIGHUP keeps
+/// its default: the window is gone, so there is nothing to restore.
+#[cfg(unix)]
+fn stop_on_signals() -> io::Result<Arc<AtomicBool>> {
+    use signal_hook::consts::{SIGINT, SIGTERM};
+    let stop = Arc::new(AtomicBool::new(false));
+    for signal in [SIGTERM, SIGINT] {
+        signal_hook::flag::register(signal, Arc::clone(&stop))?;
+    }
+    Ok(stop)
+}
+
+#[cfg(not(unix))]
+fn stop_on_signals() -> io::Result<Arc<AtomicBool>> {
+    Ok(Arc::new(AtomicBool::new(false)))
+}
+
+/// If the terminal goes away while SIGHUP is ignored (say, under `nohup`),
+/// crossterm's input loop spins forever on end-of-file and the main thread
+/// never gets control back. Watch for that from the side and exit; the
+/// autosave keeps the game to within a few seconds.
+fn exit_if_terminal_vanishes() {
+    if !io::stdin().is_terminal() {
+        return; // input comes from /dev/tty some other way; nothing to watch
+    }
+    thread::spawn(|| {
+        loop {
+            thread::sleep(Duration::from_millis(500));
+            if !io::stdin().is_terminal() {
+                std::process::exit(0);
+            }
+        }
+    });
+}
+
 fn run() -> io::Result<()> {
-    let mut term = setup_terminal()?;
-    let mut app = App::new();
+    install_panic_hook();
+    let stop = stop_on_signals()?;
+    let _guard = TerminalGuard::enter()?;
+    exit_if_terminal_vanishes();
+    let mut term = Terminal::new(CrosstermBackend::new(io::stdout()))?;
+    let mut app = App::new(Store::open_default());
+    // However the loop ends (q, a signal, a dead terminal), keep the game.
+    // A failed final save is reported once the screen is restored.
+    let result = event_loop(&mut term, &mut app, &stop);
+    let saved = app
+        .save_on_exit()
+        .map_err(|e| io::Error::new(e.kind(), format!("couldn't save your game: {e}")));
+    result.and(saved)
+}
 
-    loop {
-        // If a new puzzle was requested, paint the "dealing" frame first so
-        // the pause is visible, then generate synchronously (fully offline).
-        if app.pending_level.is_some() {
-            app.generating = true;
-            let st = RenderState {
-                game: app.game.as_ref(),
-                show_help: false,
-                show_levels: false,
-                level_cursor: app.level_cursor,
-                menu_cursor: app.menu_cursor,
-                generating: true,
-            };
-            term.draw(|f| {
-                app.hits = ui::render(f, &st);
-            })?;
-            app.finish_pending();
+/// `Ok(None)` for a call a signal interrupted: just go round again.
+fn retry_interrupted<T>(r: io::Result<T>) -> io::Result<Option<T>> {
+    match r {
+        Ok(v) => Ok(Some(v)),
+        Err(e) if e.kind() == io::ErrorKind::Interrupted => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+fn event_loop(
+    term: &mut Terminal<CrosstermBackend<Stdout>>,
+    app: &mut App,
+    stop: &AtomicBool,
+) -> io::Result<()> {
+    let mut hits = Vec::new();
+    // A puzzle being dealt on background threads (fully offline).
+    let mut dealer: Option<mpsc::Receiver<Deal>> = None;
+
+    while !stop.load(Ordering::Relaxed) {
+        app.autosave();
+        if let Some(level) = app.dealing {
+            match &dealer {
+                None => {
+                    let (tx, rx) = mpsc::channel();
+                    // Sending only fails if the app quit meanwhile.
+                    thread::spawn(move || {
+                        let _ = tx.send(deal::deal_fast(level));
+                    });
+                    dealer = Some(rx);
+                }
+                Some(rx) => {
+                    let dealt = match rx.try_recv() {
+                        Ok(d) => Some(d),
+                        Err(TryRecvError::Empty) => None,
+                        // The dealer died without a puzzle (a worker
+                        // panicked): deal here rather than spin forever,
+                        // and repaint over the panic message it printed.
+                        Err(TryRecvError::Disconnected) => {
+                            term.clear()?;
+                            Some(deal::deal(level, &mut rand::rng()))
+                        }
+                    };
+                    if let Some(d) = dealt {
+                        app.start_game(Game::new(level, d.puzzle, d.solution));
+                        dealer = None;
+                    }
+                }
+            }
         }
 
-        {
-            let st = RenderState {
-                game: app.game.as_ref(),
-                show_help: app.show_help,
-                show_levels: app.show_levels,
-                level_cursor: app.level_cursor,
-                menu_cursor: app.menu_cursor,
-                generating: app.generating,
-            };
-            term.draw(|f| {
-                app.hits = ui::render(f, &st);
-            })?;
-        }
+        term.draw(|f| hits = ui::render(f, app))?;
 
-        // Poll so the timer refreshes even without input.
-        if !event::poll(Duration::from_millis(250))? {
+        // Poll so the timer (or the dealing spinner) refreshes on its own.
+        let tick = if app.dealing.is_some() { 50 } else { 250 };
+        if retry_interrupted(event::poll(Duration::from_millis(tick)))? != Some(true) {
             continue;
         }
-        match event::read()? {
-            Event::Key(key) => {
-                if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
-                    continue;
-                }
-                if app.handle_key(key.code, key.modifiers) {
-                    break;
-                }
+        let Some(event) = retry_interrupted(event::read())? else {
+            continue;
+        };
+        let action = match event {
+            Event::Key(key) if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) => {
+                app.key_action(key.code, key.modifiers)
             }
-            Event::Mouse(m) => {
-                if matches!(
-                    m.kind,
-                    MouseEventKind::Down(crossterm::event::MouseButton::Left)
-                ) && app.handle_click(m.column, m.row)
-                {
-                    break;
-                }
+            Event::Mouse(m) if m.kind == MouseEventKind::Down(MouseButton::Left) => {
+                ui::hit_at(&hits, m.column, m.row)
             }
-            Event::Resize(_, _) => {}
-            _ => {}
+            Event::FocusLost => {
+                app.set_focus(false);
+                None
+            }
+            Event::FocusGained => {
+                app.set_focus(true);
+                None
+            }
+            _ => None,
+        };
+        if let Some(action) = action
+            && app.apply(action)
+        {
+            return Ok(());
         }
     }
-
-    restore_terminal(&mut term);
     Ok(())
 }
 
+/// Deal one puzzle per level with a fixed seed and check each one, proving
+/// the generator works without any I/O or network. Reports what each
+/// puzzle actually is, not what the level promises.
+fn offline_check() {
+    let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+    for level in Difficulty::ALL {
+        let started = Instant::now();
+        let d = deal::deal(level, &mut rng);
+        let took = started.elapsed();
+        assert!(sudoku::is_valid_solution(&d.solution), "{level:?}");
+        assert!(sudoku::is_unique(&d.puzzle), "{level:?}");
+        assert_eq!(sudoku::solve_one(&d.puzzle), Some(d.solution), "{level:?}");
+        assert!(level.techniques().contains(&d.grade.hardest), "{level:?}");
+        println!(
+            "{:<6}  {} givens, hardest step: {:<17} ({} steps)  dealt in {:.0?}: OK",
+            level.name(),
+            d.givens(),
+            d.grade.hardest.name(),
+            d.grade.steps,
+            took,
+        );
+    }
+}
+
 fn main() {
-    // Deterministic self-check entry point for tests stays in unit tests;
-    // the binary just runs the TUI.
     if std::env::args().any(|a| a == "--offline-check") {
-        // Generate one puzzle per level with a fixed seed to prove the
-        // offline generator works without any I/O or network.
-        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
-        for d in Difficulty::all() {
-            let (mut p, s) = sudoku::generate(d, &mut rng);
-            assert_eq!(sudoku::count_solutions(&mut p, 2), 1, "{:?}", d);
-            assert_eq!(sudoku::solve_one(&p).unwrap(), s, "{:?}", d);
-            println!("{} ({} givens): OK", d.name(), d.givens());
-        }
+        offline_check();
         return;
     }
     if let Err(e) = run() {
         eprintln!("tudoku: {e}");
         std::process::exit(1);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn app_with_completed_game(level: Difficulty) -> App {
-        let mut app = App::new();
-        let (p, s) = Game::test_board();
-        let mut game = Game::new(level, p, s);
-        game.completed = true;
-        app.game = Some(game);
-        app.last_level = level;
-        app
-    }
-
-    #[test]
-    fn reopening_picker_from_win_screen_shows_current_difficulty() {
-        let mut app = app_with_completed_game(Difficulty::Easy);
-        // Simulate a picker that was opened and then cancelled on a
-        // different difficulty, leaving a stale cursor behind.
-        app.level_cursor = Difficulty::Expert.index();
-
-        app.handle_key(KeyCode::Char('d'), KeyModifiers::NONE);
-
-        assert!(app.show_levels);
-        assert_eq!(app.level_cursor, Difficulty::Easy.index());
-    }
-
-    #[test]
-    fn win_levels_click_shows_current_difficulty() {
-        let mut app = app_with_completed_game(Difficulty::Hard);
-        app.level_cursor = Difficulty::Zen.index();
-
-        app.dispatch_click(ClickAction::WinLevels);
-
-        assert!(app.show_levels);
-        assert_eq!(app.level_cursor, Difficulty::Hard.index());
-    }
-
-    #[test]
-    fn close_popups_closes_the_visible_one_first() {
-        let mut app = App::new();
-        app.show_help = true;
-        app.show_levels = true;
-        app.close_popups();
-        // Levels renders on top of Help; closing must clear it first.
-        assert!(!app.show_levels);
-        assert!(app.show_help);
-        app.close_popups();
-        assert!(!app.show_help);
     }
 }

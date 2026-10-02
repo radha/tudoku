@@ -2,10 +2,17 @@
 
 use std::time::{Duration, Instant};
 
-use crate::sudoku::{self, CELLS, Difficulty, idx};
+use serde::{Deserialize, Serialize};
+
+use crate::deal::Difficulty;
+use crate::logic::{self, Technique};
+use crate::sudoku::{
+    ALL_DIGITS, Board, CELLS, col_of, format_board, idx, is_unique, parse_board, peers, row_of,
+    solve_one,
+};
 
 /// Snapshot of one cell (plus auto-removed peer notes) for undo.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct UndoEntry {
     cell: usize,
     prev_value: u8,
@@ -14,10 +21,48 @@ struct UndoEntry {
     peer_notes: Vec<(usize, u16)>,
 }
 
+impl UndoEntry {
+    /// Could this entry have come from playing `puzzle`?
+    fn fits(&self, puzzle: &Board) -> bool {
+        let notes_ok = |m: u16| m & !ALL_DIGITS == 0;
+        self.cell < CELLS
+            && puzzle[self.cell] == 0
+            && self.prev_value <= 9
+            // Hinted cells are locked, so no edit ever starts from one.
+            && !self.prev_hinted
+            && notes_ok(self.prev_notes)
+            && self
+                .peer_notes
+                .iter()
+                .all(|&(p, m)| p < CELLS && puzzle[p] == 0 && notes_ok(m))
+    }
+}
+
+/// Everything needed to resume a game, in a stable on-disk shape. Boards
+/// are 81-digit strings so a save file stays readable.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SavedGame {
+    version: u32,
+    difficulty: Difficulty,
+    puzzle: String,
+    solution: String,
+    values: String,
+    notes: Vec<u16>,
+    hinted: Vec<usize>,
+    selected: (usize, usize),
+    notes_mode: bool,
+    mistakes: u32,
+    hints_used: u32,
+    elapsed_ms: u64,
+    undo: Vec<UndoEntry>,
+}
+
+const SAVE_VERSION: u32 = 1;
+
 pub struct Game {
     pub difficulty: Difficulty,
-    pub solution: [u8; CELLS],
-    pub values: [u8; CELLS],
+    pub solution: Board,
+    pub values: Board,
     pub given: [bool; CELLS],
     pub notes: [u16; CELLS],
     pub hinted: [bool; CELLS],
@@ -34,34 +79,18 @@ pub struct Game {
 }
 
 impl Game {
-    pub fn new(difficulty: Difficulty, puzzle: [u8; CELLS], solution: [u8; CELLS]) -> Self {
-        let mut values = [0u8; CELLS];
-        let mut given = [false; CELLS];
-        for i in 0..CELLS {
-            values[i] = puzzle[i];
-            given[i] = puzzle[i] != 0;
-        }
+    pub fn new(difficulty: Difficulty, puzzle: Board, solution: Board) -> Self {
+        let given = puzzle.map(|v| v != 0);
         // Start selection on the first editable cell.
-        let mut selected = (0, 0);
-        for r in 0..9 {
-            for c in 0..9 {
-                if !given[idx(r, c)] {
-                    selected = (r, c);
-                    break;
-                }
-            }
-            if !given[idx(selected.0, selected.1)] {
-                break;
-            }
-        }
+        let first = (0..CELLS).find(|&i| !given[i]).unwrap_or(0);
         Self {
             difficulty,
             solution,
-            values,
+            values: puzzle,
             given,
             notes: [0; CELLS],
             hinted: [false; CELLS],
-            selected,
+            selected: (row_of(first), col_of(first)),
             notes_mode: false,
             mistakes: 0,
             hints_used: 0,
@@ -78,6 +107,10 @@ impl Game {
         idx(self.selected.0, self.selected.1)
     }
 
+    fn select_cell(&mut self, i: usize) {
+        self.selected = (row_of(i), col_of(i));
+    }
+
     pub fn move_selection(&mut self, dr: i32, dc: i32) {
         let (r, c) = self.selected;
         let nr = (r as i32 + dr).rem_euclid(9) as usize;
@@ -90,6 +123,9 @@ impl Game {
     }
 
     pub fn toggle_notes_mode(&mut self) {
+        if self.completed {
+            return;
+        }
         self.notes_mode = !self.notes_mode;
     }
 
@@ -103,22 +139,19 @@ impl Game {
 
     /// Pause or resume the timer. While paused the board is hidden.
     pub fn set_paused(&mut self, paused: bool) {
-        if paused == self.paused {
+        if paused == self.paused || self.completed {
             return;
         }
         if paused {
             self.banked += self.started.elapsed();
-            self.paused = true;
         } else {
             self.started = Instant::now();
-            self.paused = false;
         }
+        self.paused = paused;
     }
 
     fn mark_finished_if_done(&mut self) {
-        if !self.completed
-            && (0..CELLS).all(|i| self.values[i] == self.solution[i] && self.values[i] != 0)
-        {
+        if !self.completed && self.values == self.solution {
             self.completed = true;
             self.banked += self.started.elapsed();
         }
@@ -131,14 +164,25 @@ impl Game {
     /// Clear `digit` from the pencil marks of every peer of `i` (same row,
     /// column, or box), returning the cleared cells' prior notes for undo.
     fn clear_peer_notes(&mut self, i: usize, digit: u8) -> Vec<(usize, u16)> {
-        let mut peers = Vec::new();
-        for p in 0..CELLS {
-            if p != i && self.notes[p] & (1 << digit) != 0 && sudoku::shares_house(i, p) {
-                peers.push((p, self.notes[p]));
-                self.notes[p] &= !(1 << digit);
+        let bit = 1 << digit;
+        let mut cleared = Vec::new();
+        for p in peers(i) {
+            if self.notes[p] & bit != 0 {
+                cleared.push((p, self.notes[p]));
+                self.notes[p] &= !bit;
             }
         }
-        peers
+        cleared
+    }
+
+    fn push_undo(&mut self, i: usize, peer_notes: Vec<(usize, u16)>) {
+        self.undo.push(UndoEntry {
+            cell: i,
+            prev_value: self.values[i],
+            prev_notes: self.notes[i],
+            prev_hinted: self.hinted[i],
+            peer_notes,
+        });
     }
 
     /// Enter a digit: place the value, or toggle a pencil mark in notes mode.
@@ -157,16 +201,8 @@ impl Game {
                 self.say("Clear the value first (Eraser)");
                 return;
             }
-            let prev = self.notes[i];
-            let next = prev ^ (1 << digit);
-            self.undo.push(UndoEntry {
-                cell: i,
-                prev_value: self.values[i],
-                prev_notes: prev,
-                prev_hinted: self.hinted[i],
-                peer_notes: Vec::new(),
-            });
-            self.notes[i] = next;
+            self.push_undo(i, Vec::new());
+            self.notes[i] ^= 1 << digit;
             return;
         }
         if self.values[i] == digit {
@@ -179,19 +215,13 @@ impl Game {
         } else {
             Vec::new()
         };
-        self.undo.push(UndoEntry {
-            cell: i,
-            prev_value: self.values[i],
-            prev_notes: self.notes[i],
-            prev_hinted: self.hinted[i],
-            peer_notes: peers,
-        });
+        self.push_undo(i, peers);
         self.values[i] = digit;
         self.notes[i] = 0;
         if !correct {
             // Mistakes are cumulative: fixing or undoing the cell later
             // must not decrement this counter.
-            self.mistakes += 1;
+            self.mistakes = self.mistakes.saturating_add(1);
             self.say("Not quite — that digit is wrong");
         }
         self.mark_finished_if_done();
@@ -210,19 +240,14 @@ impl Game {
         if self.values[i] == 0 && self.notes[i] == 0 {
             return;
         }
-        self.undo.push(UndoEntry {
-            cell: i,
-            prev_value: self.values[i],
-            prev_notes: self.notes[i],
-            prev_hinted: self.hinted[i],
-            peer_notes: Vec::new(),
-        });
+        self.push_undo(i, Vec::new());
         self.values[i] = 0;
         self.notes[i] = 0;
     }
 
+    /// Step back one edit. A solved puzzle stays solved.
     pub fn undo(&mut self) {
-        if self.paused {
+        if self.paused || self.completed {
             return;
         }
         let Some(e) = self.undo.pop() else {
@@ -236,56 +261,66 @@ impl Game {
         self.notes[e.cell] = e.prev_notes;
         self.hinted[e.cell] = e.prev_hinted;
         // Do not restore mistakes: the counter is cumulative.
-        if self.completed {
-            self.completed = false;
-            self.started = Instant::now();
-        }
-        self.selected = (e.cell / 9, e.cell % 9);
+        self.select_cell(e.cell);
     }
 
-    /// Reveal the correct digit for the selected cell if it is editable,
-    /// otherwise the first editable wrong/empty cell. Hinted cells lock.
+    /// Reveal the correct digit for the selected cell if it is still open;
+    /// otherwise reveal the cell a person could deduce next, and say which
+    /// technique gets there. Hinted cells lock.
     pub fn hint(&mut self) {
         if self.completed || self.paused {
             return;
         }
         let s = self.selected_idx();
-        let target = if !self.locked(s) && self.values[s] != self.solution[s] {
-            Some(s)
+        let (i, msg) = if !self.locked(s) && !self.is_correct(s) {
+            (s, "Hint placed".to_string())
+        } else if let Some((i, _, technique)) = logic::next_placement(&self.correct_values()) {
+            let msg = if technique <= Technique::HiddenSingle {
+                format!("Hint: {}", technique.name())
+            } else {
+                format!("Hint: {}, then a single", technique.name())
+            };
+            (i, msg)
+        } else if let Some(i) = (0..CELLS).find(|&i| !self.is_correct(i)) {
+            // Logic is stuck (it shouldn't be, on a dealt puzzle).
+            (i, "Hint placed".to_string())
         } else {
-            (0..CELLS).find(|&i| !self.locked(i) && self.values[i] != self.solution[i])
-        };
-        let Some(i) = target else {
             self.say("Nothing to reveal");
             return;
         };
         let digit = self.solution[i];
         let peers = self.clear_peer_notes(i, digit);
-        self.undo.push(UndoEntry {
-            cell: i,
-            prev_value: self.values[i],
-            prev_notes: self.notes[i],
-            prev_hinted: self.hinted[i],
-            peer_notes: peers,
-        });
+        self.push_undo(i, peers);
         self.values[i] = digit;
         self.notes[i] = 0;
         self.hinted[i] = true;
-        self.hints_used += 1;
-        self.selected = (i / 9, i % 9);
-        self.say("Hint placed (locked)");
+        self.hints_used = self.hints_used.saturating_add(1);
+        self.select_cell(i);
+        self.say(&msg);
         self.mark_finished_if_done();
+    }
+
+    /// The board with wrong entries blanked: what logic may build on.
+    fn correct_values(&self) -> Board {
+        std::array::from_fn(|i| {
+            if self.is_correct(i) {
+                self.values[i]
+            } else {
+                0
+            }
+        })
+    }
+
+    fn is_correct(&self, i: usize) -> bool {
+        self.values[i] != 0 && self.values[i] == self.solution[i]
     }
 
     /// How many of each digit are still missing (for the number bar).
     pub fn remaining(&self) -> [u32; 10] {
-        let mut out = [0u32; 10];
-        for (d, slot) in out.iter_mut().enumerate().skip(1) {
-            let digit = d as u8;
-            let placed = (0..CELLS)
-                .filter(|&i| self.values[i] == digit && self.values[i] == self.solution[i])
-                .count() as u32;
-            *slot = 9 - placed;
+        let mut out = [9u32; 10];
+        out[0] = 0;
+        for i in (0..CELLS).filter(|&i| self.is_correct(i)) {
+            out[usize::from(self.values[i])] -= 1;
         }
         out
     }
@@ -297,82 +332,118 @@ impl Game {
         if v == 0 || self.given[i] {
             return false;
         }
-        if v != self.solution[i] {
-            return true;
-        }
-        // Correct digit can still conflict if the user duplicated it
+        // A correct digit can still conflict if the user duplicated it
         // elsewhere (both cells show the error).
-        let (r, c) = (i / 9, i % 9);
-        for k in 0..9 {
-            let a = idx(r, k);
-            let b = idx(k, c);
-            if a != i && self.values[a] == v {
-                return true;
-            }
-            if b != i && self.values[b] == v {
-                return true;
-            }
-        }
-        let br = (r / 3) * 3;
-        let bc = (c / 3) * 3;
-        for dr in 0..3 {
-            for dc in 0..3 {
-                let a = idx(br + dr, bc + dc);
-                if a != i && self.values[a] == v {
-                    return true;
-                }
-            }
-        }
-        false
+        v != self.solution[i] || peers(i).any(|p| self.values[p] == v)
     }
 
+    /// Blanks filled correctly so far, out of the puzzle's blanks.
     pub fn progress(&self) -> (usize, usize) {
-        let done = (0..CELLS)
-            .filter(|&i| self.values[i] != 0 && self.values[i] == self.solution[i])
-            .count();
-        (done, CELLS)
+        let open = || (0..CELLS).filter(|&i| !self.given[i]);
+        let done = open().filter(|&i| self.is_correct(i)).count();
+        (done, open().count())
     }
 
-    #[cfg(test)]
-    pub fn test_board() -> ([u8; CELLS], [u8; CELLS]) {
-        // Classic fixed puzzle + solution so tests never pay generation cost.
-        let puzzle =
-            "530070000600195000098000060800060003400803001700020006060000280000419005000080079";
-        let solution =
-            "534678912672195348198342567859761423426853791713924856961537284287419635345286179";
-        let mut p = [0u8; CELLS];
-        let mut s = [0u8; CELLS];
-        for (i, (a, b)) in puzzle.chars().zip(solution.chars()).enumerate() {
-            p[i] = a.to_digit(10).unwrap() as u8;
-            s[i] = b.to_digit(10).unwrap() as u8;
-        }
-        (p, s)
-    }
-
-    fn say(&mut self, msg: &str) {
+    /// Show a transient message in the header.
+    pub fn say(&mut self, msg: &str) {
         self.status = Some((msg.to_string(), Instant::now()));
     }
 
     /// Current transient message, if younger than `ttl`.
     pub fn message(&self, ttl: Duration) -> Option<&str> {
-        self.status.as_ref().and_then(|(m, t)| {
-            if t.elapsed() < ttl {
-                Some(m.as_str())
-            } else {
-                None
-            }
-        })
+        self.status
+            .as_ref()
+            .filter(|(_, t)| t.elapsed() < ttl)
+            .map(|(m, _)| m.as_str())
+    }
+
+    pub fn snapshot(&self) -> SavedGame {
+        let puzzle: Board = std::array::from_fn(|i| if self.given[i] { self.values[i] } else { 0 });
+        SavedGame {
+            version: SAVE_VERSION,
+            difficulty: self.difficulty,
+            puzzle: format_board(&puzzle),
+            solution: format_board(&self.solution),
+            values: format_board(&self.values),
+            notes: self.notes.to_vec(),
+            hinted: (0..CELLS).filter(|&i| self.hinted[i]).collect(),
+            selected: self.selected,
+            notes_mode: self.notes_mode,
+            mistakes: self.mistakes,
+            hints_used: self.hints_used,
+            elapsed_ms: u64::try_from(self.elapsed().as_millis()).unwrap_or(u64::MAX),
+            undo: self.undo.clone(),
+        }
+    }
+
+    /// Rebuild a game from a save, refusing anything that isn't a
+    /// consistent, unfinished, uniquely solvable puzzle.
+    pub fn restore(s: SavedGame) -> Result<Game, String> {
+        if s.version != SAVE_VERSION {
+            return Err(format!("unknown save version {}", s.version));
+        }
+        let board = |name: &str, text: &str| {
+            parse_board(text).ok_or_else(|| format!("unreadable {name} board"))
+        };
+        let puzzle = board("puzzle", &s.puzzle)?;
+        let solution = board("solution", &s.solution)?;
+        let values = board("values", &s.values)?;
+        let consistent = is_unique(&puzzle)
+            && solve_one(&puzzle) == Some(solution)
+            && (0..CELLS).all(|i| puzzle[i] == 0 || values[i] == puzzle[i])
+            && values != solution
+            && s.notes.len() == CELLS
+            && s.notes.iter().all(|&m| m & !ALL_DIGITS == 0)
+            && s.hinted
+                .iter()
+                .all(|&i| i < CELLS && puzzle[i] == 0 && values[i] == solution[i])
+            && s.selected.0 < 9
+            && s.selected.1 < 9
+            && s.undo.iter().all(|e| e.fits(&puzzle));
+        if !consistent {
+            return Err("inconsistent save".to_string());
+        }
+        let mut game = Game::new(s.difficulty, puzzle, solution);
+        game.values = values;
+        game.notes.copy_from_slice(&s.notes);
+        for i in s.hinted {
+            game.hinted[i] = true;
+        }
+        game.selected = s.selected;
+        game.notes_mode = s.notes_mode;
+        game.mistakes = s.mistakes;
+        game.hints_used = s.hints_used;
+        game.banked = Duration::from_millis(s.elapsed_ms);
+        game.paused = true;
+        game.undo = s.undo;
+        Ok(game)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sudoku::Difficulty;
+    use crate::sudoku::test_board;
 
     fn test_game() -> Game {
-        let (p, s) = Game::test_board();
+        let (p, s) = test_board();
         Game::new(Difficulty::Easy, p, s)
+    }
+
+    fn solve_all(g: &mut Game) {
+        for i in 0..CELLS {
+            if !g.given[i] {
+                g.set_selected(row_of(i), col_of(i));
+                g.notes_mode = false;
+                g.enter_digit(g.solution[i]);
+            }
+        }
+    }
+
+    #[test]
+    fn starts_on_first_editable_cell() {
+        let g = test_game();
+        assert_eq!(g.selected, (0, 2));
     }
 
     #[test]
@@ -386,6 +457,18 @@ mod tests {
         g.enter_digit(9);
         assert_eq!(g.mistakes, 1);
         assert!(g.cell_error(idx(0, 2)));
+    }
+
+    #[test]
+    fn duplicate_of_a_correct_digit_flags_both_cells() {
+        let mut g = test_game();
+        g.set_selected(0, 2);
+        g.enter_digit(4); // correct
+        g.set_selected(0, 3);
+        g.enter_digit(4); // wrong, and duplicates (0,2) in row 0
+        assert!(g.cell_error(idx(0, 3)));
+        assert!(g.cell_error(idx(0, 2)));
+        assert!(!g.cell_error(idx(0, 0)), "givens never flag");
     }
 
     #[test]
@@ -417,6 +500,112 @@ mod tests {
     }
 
     #[test]
+    fn hint_on_a_given_reveals_the_next_logical_cell() {
+        let mut g = test_game();
+        // A wrong entry elsewhere must not mislead the deduction.
+        g.set_selected(0, 3);
+        g.enter_digit(4);
+        let (want, digit, _) = logic::next_placement(&g.correct_values()).unwrap();
+        g.set_selected(0, 0); // a given: can't be hinted itself
+        g.hint();
+        assert_eq!(g.selected_idx(), want);
+        assert_eq!(g.values[want], digit);
+        assert!(g.hinted[want]);
+        let msg = g.message(Duration::from_secs(60)).unwrap();
+        assert!(msg.starts_with("Hint: "), "{msg}");
+        assert!(msg.contains("single"), "{msg}");
+    }
+
+    #[test]
+    fn hint_fixes_a_selected_wrong_entry() {
+        let mut g = test_game();
+        g.set_selected(0, 2);
+        g.enter_digit(9);
+        g.hint();
+        assert_eq!(g.values[idx(0, 2)], 4);
+        assert!(!g.cell_error(idx(0, 2)));
+    }
+
+    #[test]
+    fn snapshots_round_trip_through_json() {
+        let mut g = test_game();
+        g.set_selected(0, 2);
+        g.enter_digit(9); // wrong
+        g.toggle_notes_mode();
+        g.set_selected(1, 1);
+        g.enter_digit(4);
+        g.enter_digit(8);
+        g.toggle_notes_mode();
+        g.set_selected(0, 3);
+        g.hint();
+        let saved = g.snapshot();
+        let json = serde_json::to_string(&saved).unwrap();
+        let mut back = Game::restore(serde_json::from_str(&json).unwrap()).unwrap();
+        assert_eq!(back.difficulty, g.difficulty);
+        assert_eq!(back.values, g.values);
+        assert_eq!(back.given, g.given);
+        assert_eq!(back.notes, g.notes);
+        assert_eq!(back.hinted, g.hinted);
+        assert_eq!(back.selected, g.selected);
+        assert_eq!(back.mistakes, 1);
+        assert_eq!(back.hints_used, 1);
+        assert!(back.paused, "restored games wait with the clock stopped");
+        assert!(!back.completed);
+        assert_eq!(back.elapsed(), Duration::from_millis(saved.elapsed_ms));
+        back.set_paused(false);
+        // Undo history survives the trip.
+        for _ in 0..4 {
+            back.undo();
+            g.undo();
+            assert_eq!(back.values, g.values);
+            assert_eq!(back.notes, g.notes);
+            assert_eq!(back.hinted, g.hinted);
+        }
+        assert_eq!(back.values[idx(0, 2)], 0, "back to the start");
+    }
+
+    #[test]
+    fn restore_rejects_tampered_or_finished_saves() {
+        let good = test_game().snapshot();
+        assert!(Game::restore(good.clone()).is_ok());
+        let tampered: [fn(&mut SavedGame); 10] = [
+            |s| s.version = 99,
+            |s| s.values.replace_range(0..1, "9"), // overwrites a given
+            |s| s.solution.replace_range(0..2, "35"),
+            |s| s.puzzle = "0".repeat(81),     // not unique
+            |s| s.values = s.solution.clone(), // already solved
+            |s| s.notes[2] = 1,                // bit 0 isn't a digit
+            |s| s.hinted = vec![0],            // can't hint a given
+            |s| s.selected = (9, 0),
+            // Undo history that could never come from play: un-hinting into
+            // an empty locked cell, or editing a given.
+            |s| {
+                s.undo.push(UndoEntry {
+                    cell: 2,
+                    prev_value: 0,
+                    prev_notes: 0,
+                    prev_hinted: true,
+                    peer_notes: Vec::new(),
+                })
+            },
+            |s| {
+                s.undo.push(UndoEntry {
+                    cell: 0,
+                    prev_value: 0,
+                    prev_notes: 0,
+                    prev_hinted: false,
+                    peer_notes: Vec::new(),
+                })
+            },
+        ];
+        for (n, tamper) in tampered.iter().enumerate() {
+            let mut s = good.clone();
+            tamper(&mut s);
+            assert!(Game::restore(s).is_err(), "tampering #{n} slipped through");
+        }
+    }
+
+    #[test]
     fn repeated_wrong_digit_does_not_inflate_mistakes() {
         let mut g = test_game();
         // First empty cell is (0,2) with solution 4; 9 is wrong.
@@ -441,13 +630,7 @@ mod tests {
             "undo must not erase a mistake from the count"
         );
         // Finish the puzzle correctly: the win screen must still report 1.
-        for i in 0..CELLS {
-            if !g.given[i] {
-                g.set_selected(i / 9, i % 9);
-                g.notes_mode = false;
-                g.enter_digit(g.solution[i]);
-            }
-        }
+        solve_all(&mut g);
         assert!(g.completed);
         assert_eq!(g.mistakes, 1);
     }
@@ -455,16 +638,36 @@ mod tests {
     #[test]
     fn completing_every_cell_wins() {
         let mut g = test_game();
-        for i in 0..CELLS {
-            if !g.given[i] {
-                g.set_selected(i / 9, i % 9);
-                g.notes_mode = false;
-                g.enter_digit(g.solution[i]);
-            }
-        }
+        solve_all(&mut g);
         assert!(g.completed);
         let (done, total) = g.progress();
-        assert_eq!((done, total), (81, 81));
+        assert_eq!((done, total), (51, 51), "counts the 51 blanks, not givens");
+        assert_eq!(g.remaining(), [0; 10]);
+        // A solved board is frozen: not even notes mode changes.
+        g.toggle_notes_mode();
+        assert!(!g.notes_mode);
+    }
+
+    #[test]
+    fn counters_saturate_instead_of_wrapping() {
+        let mut g = test_game();
+        g.mistakes = u32::MAX;
+        g.hints_used = u32::MAX;
+        g.set_selected(0, 2);
+        g.enter_digit(9);
+        g.hint();
+        assert_eq!((g.mistakes, g.hints_used), (u32::MAX, u32::MAX));
+    }
+
+    #[test]
+    fn remaining_counts_only_correct_placements() {
+        let mut g = test_game();
+        let before = g.remaining();
+        g.set_selected(0, 2);
+        g.enter_digit(9); // wrong: 9 still missing the same number of times
+        assert_eq!(g.remaining()[9], before[9]);
+        g.enter_digit(4); // correct
+        assert_eq!(g.remaining()[4], before[4] - 1);
     }
 
     #[test]
@@ -497,5 +700,8 @@ mod tests {
         g.set_selected(0, 2);
         g.enter_digit(4);
         assert_eq!(g.notes[idx(1, 1)] & (1 << 4), 0);
+        // Undo brings the peer's pencil mark back.
+        g.undo();
+        assert_ne!(g.notes[idx(1, 1)] & (1 << 4), 0);
     }
 }

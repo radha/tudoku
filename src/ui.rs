@@ -1,17 +1,21 @@
-//! Rendering: board, number bar, buttons, popups. Pure view code —
-//! `render` draws everything and returns the clickable areas for the
-//! event loop to hit-test mouse clicks against.
+//! Rendering: board, number pad, buttons, popups. Pure view code —
+//! `render` draws the app and returns the clickable areas for the event
+//! loop to hit-test mouse clicks against.
 
 use ratatui::{
     Frame,
-    layout::{Alignment, Rect},
+    layout::{Alignment, Constraint, Margin, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, Paragraph},
 };
 
+use std::time::Duration;
+
+use crate::app::{Action, App, BoardAction, MenuRow, Overlay};
+use crate::deal::Difficulty;
 use crate::game::Game;
-use crate::sudoku::{Difficulty, box_of, idx};
+use crate::sudoku::{box_of, idx};
 
 // ---------------------------------------------------------------- palette
 
@@ -27,24 +31,25 @@ const GRID_BOX: Color = Color::Rgb(34, 211, 238);
 const PEER_BG: Color = Color::Rgb(30, 41, 59);
 const SAME_BG: Color = Color::Rgb(51, 65, 85);
 const SEL_BG: Color = Color::Rgb(37, 99, 235);
+const POPUP_BG: Color = Color::Rgb(15, 23, 42);
 
 // ------------------------------------------------------------ sizing
 
-// Terminal glyph cells run ~2x taller than wide, so a 6x3 terminal-cell
-// interior renders near-square on most fonts. 6 wide is also the minimum
-// that still fits the 3x3 pencil-mark mini-grid ("d d d").
-pub const CELL_W: u16 = 6;
+// Every cell has its own frame, so the grid pitch is (CELL_W+1) x (CELL_H+1).
+// Terminal glyphs run ~2x taller than wide, so an 8x4 pitch looks square.
+// 7 wide also centers the pencil-mark mini-grid (" 1 2 3 ") on the value.
+pub const CELL_W: u16 = 7;
 pub const CELL_H: u16 = 3;
-pub const BOARD_W: u16 = 9 * CELL_W + 10; // 64
-pub const BOARD_H: u16 = 9 * CELL_H + 4; // 31 (horizontal guides only around boxes)
+pub const BOARD_W: u16 = 9 * (CELL_W + 1) + 1; // 73
+pub const BOARD_H: u16 = 9 * (CELL_H + 1) + 1; // 37
 
 // The number pad and action buttons sit beside the board rather than below
 // it, since terminals are almost always much wider than they are tall — that
 // keeps the required height pinned to the board's own height instead of
 // stacking on top of it.
-const DIGIT_W: u16 = 6;
-const DIGIT_GAP: u16 = 1;
-const DIGIT_GRID_W: u16 = 3 * DIGIT_W + 2 * DIGIT_GAP; // 20
+const DIGIT_W: u16 = 7;
+const DIGIT_GAP: u16 = 2;
+const DIGIT_GRID_W: u16 = 3 * DIGIT_W + 2 * DIGIT_GAP; // 25, as wide as the buttons
 const DIGIT_GRID_H: u16 = 3 * CELL_H; // 9
 const BTN_W: u16 = 12;
 const BTN_GAP: u16 = 1;
@@ -58,105 +63,122 @@ const PANEL_W: u16 = if DIGIT_GRID_W > BTN_GRID_W {
 };
 const PANEL_H: u16 = DIGIT_GRID_H + PANEL_GROUP_GAP + BTN_GRID_H; // 23
 const PANEL_GAP: u16 = 3;
-const BLOCK_W: u16 = BOARD_W + PANEL_GAP + PANEL_W; // 92
+const BLOCK_W: u16 = BOARD_W + PANEL_GAP + PANEL_W; // 101
 
-pub const MIN_W: u16 = BLOCK_W + 2;
-pub const MIN_H: u16 = 3 + BOARD_H; // header (2 lines) + divider + board
+pub const MIN_W: u16 = BLOCK_W + 2; // 103: room for the row labels
+pub const MIN_H: u16 = 3 + BOARD_H; // 40: header (2 lines) + divider + board
 
 // ------------------------------------------------------------ clicks
 
-#[derive(Debug, Clone, Copy)]
-pub enum ClickAction {
-    Cell(usize, usize),
-    Digit(u8),
-    Notes,
-    Undo,
-    Hint,
-    Erase,
-    New,
-    Level,
-    Pause,
-    Help,
-    LevelChoice(usize),
-    MenuChoice(usize),
-    Close,
-    WinNew,
-    WinLevels,
-    /// Swallows a click on the modal backdrop so it can't reach whatever is
-    /// drawn underneath an open popup.
-    Blocked,
-}
-
+/// A clickable area. `action: None` swallows the click — popups use that
+/// to keep clicks from reaching whatever is drawn underneath them.
 #[derive(Debug, Clone, Copy)]
 pub struct Hit {
     pub rect: Rect,
-    pub action: ClickAction,
+    pub action: Option<Action>,
 }
 
-impl Hit {
-    fn new(rect: Rect, action: ClickAction) -> Self {
-        Self { rect, action }
-    }
+fn push_hit(hits: &mut Vec<Hit>, rect: Rect, action: Option<Action>) {
+    hits.push(Hit { rect, action });
 }
 
-pub fn hit_at(hits: &[Hit], x: u16, y: u16) -> Option<ClickAction> {
+/// The action under `(x, y)`, from the topmost (last drawn) hit area.
+pub fn hit_at(hits: &[Hit], x: u16, y: u16) -> Option<Action> {
     hits.iter()
         .rev()
-        .find(|h| {
-            x >= h.rect.x
-                && x < h.rect.x + h.rect.width
-                && y >= h.rect.y
-                && y < h.rect.y + h.rect.height
-        })
-        .map(|h| h.action)
-}
-
-// ------------------------------------------------------------ state in
-
-pub struct RenderState<'a> {
-    pub game: Option<&'a Game>,
-    pub show_help: bool,
-    pub show_levels: bool,
-    pub level_cursor: usize,
-    pub menu_cursor: usize,
-    pub generating: bool,
+        .find(|h| h.rect.contains(Position { x, y }))
+        .and_then(|h| h.action)
 }
 
 // ------------------------------------------------------------ helpers
 
 pub fn format_time(d: std::time::Duration) -> String {
     let s = d.as_secs();
-    format!("{:02}:{:02}", s / 60, s % 60)
-}
-
-fn centered_rect(area: Rect, w: u16, h: u16) -> Rect {
-    let w = w.min(area.width);
-    let h = h.min(area.height);
-    let x = area.x + area.width.saturating_sub(w) / 2;
-    let y = area.y + area.height.saturating_sub(h) / 2;
-    Rect {
-        x,
-        y,
-        width: w,
-        height: h,
+    if s >= 3600 {
+        format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
+    } else {
+        format!("{:02}:{:02}", s / 60, s % 60)
     }
 }
 
+fn centered_rect(area: Rect, w: u16, h: u16) -> Rect {
+    area.centered(Constraint::Length(w), Constraint::Length(h))
+}
+
+/// Top-left of the board for a screen `area`: the board and side panel
+/// are centered together, under the header and divider.
+fn board_origin(area: Rect) -> (u16, u16) {
+    (
+        area.x + area.width.saturating_sub(BLOCK_W) / 2,
+        layout_top(area) + 3,
+    )
+}
+
+/// First row of the game layout (header, board, footer), centered
+/// vertically so popups, which center on the screen, sit over the board.
+fn layout_top(area: Rect) -> u16 {
+    area.y + area.height.saturating_sub(MIN_H + 1) / 2
+}
+
+/// Top-left of a cell's interior.
 fn cell_screen(ox: u16, oy: u16, row: usize, col: usize) -> (u16, u16) {
     let x = ox + 1 + col as u16 * (CELL_W + 1);
-    let y = oy + 1 + row as u16 * CELL_H + (row >= 3) as u16 + (row >= 6) as u16;
+    let y = oy + 1 + row as u16 * (CELL_H + 1);
     (x, y)
 }
 
-fn is_hline(y: u16, oy: u16) -> bool {
-    // One horizontal guide per 3-row box band: top, between bands, bottom.
-    let band = 3 * CELL_H + 1;
-    y.saturating_sub(oy).is_multiple_of(band)
+/// The grid line glyph at board offset `(gx, gy)`, and whether it is part
+/// of a heavy box line; `None` inside a cell. Light lines frame cells,
+/// heavy ones frame boxes and the board, and every crossing gets the
+/// junction glyph that joins exactly the strokes meeting there.
+fn grid_glyph(gx: u16, gy: u16) -> Option<(char, bool)> {
+    let on_v = gx.is_multiple_of(CELL_W + 1);
+    let on_h = gy.is_multiple_of(CELL_H + 1);
+    let (c, r) = (gx / (CELL_W + 1), gy / (CELL_H + 1));
+    let heavy_v = on_v && c.is_multiple_of(3);
+    let heavy_h = on_h && r.is_multiple_of(3);
+    let glyph = match (on_v, on_h) {
+        (false, false) => return None,
+        (true, false) => {
+            if heavy_v {
+                '┃'
+            } else {
+                '│'
+            }
+        }
+        (false, true) => {
+            if heavy_h {
+                '━'
+            } else {
+                '─'
+            }
+        }
+        (true, true) => match (c, r) {
+            (0, 0) => '┏',
+            (9, 0) => '┓',
+            (0, 9) => '┗',
+            (9, 9) => '┛',
+            (_, 0) if heavy_v => '┳',
+            (_, 0) => '┯',
+            (_, 9) if heavy_v => '┻',
+            (_, 9) => '┷',
+            (0, _) if heavy_h => '┣',
+            (0, _) => '┠',
+            (9, _) if heavy_h => '┫',
+            (9, _) => '┨',
+            _ => match (heavy_v, heavy_h) {
+                (true, true) => '╋',
+                (true, false) => '╂',
+                (false, true) => '┿',
+                (false, false) => '┼',
+            },
+        },
+    };
+    Some((glyph, heavy_v || heavy_h))
 }
 
 // ------------------------------------------------------------ board
 
-#[allow(clippy::too_many_lines)]
 fn draw_board(frame: &mut Frame, game: &Game, ox: u16, oy: u16, hits: &mut Vec<Hit>) {
     let buf = frame.buffer_mut();
     let sel = game.selected_idx();
@@ -166,32 +188,25 @@ fn draw_board(frame: &mut Frame, game: &Game, ox: u16, oy: u16, hits: &mut Vec<H
     // Column numbers above the board.
     for c in 0..9 {
         let (x, _) = cell_screen(ox, oy, 0, c);
-        let s = (c + 1).to_string();
-        let span_x = x + CELL_W / 2;
-        if oy > 0 && span_x < buf.area.width {
-            buf[(span_x, oy - 1)]
-                .set_char(s.chars().next().unwrap())
-                .set_fg(DIM);
-        }
+        buf[(x + CELL_W / 2, oy - 1)]
+            .set_char(char::from(b'1' + c as u8))
+            .set_fg(DIM);
     }
 
     // Cell interiors.
     for r in 0..9 {
         // Row number to the left, vertically centered on the cell.
         let (_, y) = cell_screen(ox, oy, r, 0);
-        if ox > 0 {
-            buf[(ox - 1, y + CELL_H / 2)]
-                .set_char(char::from(b'1' + r as u8))
-                .set_fg(DIM);
-        }
+        buf[(ox - 1, y + CELL_H / 2)]
+            .set_char(char::from(b'1' + r as u8))
+            .set_fg(DIM);
         for c in 0..9 {
             let i = idx(r, c);
             let (x, y) = cell_screen(ox, oy, r, c);
             let is_sel = r == sel_r && c == sel_c;
             let peer =
                 !is_sel && (r == sel_r || c == sel_c || box_of(r, c) == box_of(sel_r, sel_c));
-            let same_val =
-                !is_sel && sel_val != 0 && game.values[i] == sel_val && game.values[i] != 0;
+            let same_val = !is_sel && sel_val != 0 && game.values[i] == sel_val;
             let bg = if game.paused {
                 BG
             } else if is_sel {
@@ -203,21 +218,13 @@ fn draw_board(frame: &mut Frame, game: &Game, ox: u16, oy: u16, hits: &mut Vec<H
             } else {
                 BG
             };
-            // Paint interior.
-            for dy in 0..CELL_H {
-                for k in 0..CELL_W {
-                    buf[(x + k, y + dy)].set_bg(bg);
-                }
-            }
-            hits.push(Hit::new(
-                Rect {
-                    x,
-                    y,
-                    width: CELL_W,
-                    height: CELL_H,
-                },
-                ClickAction::Cell(r, c),
-            ));
+            let cell_rect = Rect::new(x, y, CELL_W, CELL_H);
+            buf.set_style(cell_rect, Style::default().bg(bg));
+            push_hit(
+                hits,
+                cell_rect,
+                Some(Action::Board(BoardAction::Select(r, c))),
+            );
             if game.paused {
                 continue;
             }
@@ -238,8 +245,9 @@ fn draw_board(frame: &mut Frame, game: &Game, ox: u16, oy: u16, hits: &mut Vec<H
                 if is_sel {
                     style = style.fg(Color::White);
                 }
-                let ch = char::from(b'0' + v);
-                buf[(x + CELL_W / 2, ym)].set_char(ch).set_style(style);
+                buf[(x + CELL_W / 2, ym)]
+                    .set_char(char::from(b'0' + v))
+                    .set_style(style);
                 // Conflict marker: duplicates show even without color.
                 if err {
                     buf[(x, ym)]
@@ -247,29 +255,17 @@ fn draw_board(frame: &mut Frame, game: &Game, ox: u16, oy: u16, hits: &mut Vec<H
                         .set_style(Style::default().fg(RED).bg(bg).add_modifier(Modifier::BOLD));
                 }
             } else {
-                // Pencil marks as a 3x3 mini-grid filling the cell.
-                let mut any = false;
-                for nr in 0..3u16 {
-                    let mut row = String::with_capacity(CELL_W as usize);
-                    for nc in 0..3u8 {
-                        if nc > 0 {
-                            row.push(' ');
-                        }
-                        let d = nr as u8 * 3 + nc + 1;
-                        if game.notes[i] & (1 << d) != 0 {
-                            row.push(char::from(b'0' + d));
-                            any = true;
-                        } else {
-                            row.push(' ');
-                        }
-                    }
-                    for (k, ch) in row.chars().enumerate() {
-                        buf[(x + k as u16, y + nr)]
-                            .set_char(ch)
-                            .set_style(Style::default().fg(DIM).bg(bg).add_modifier(Modifier::DIM));
+                // Pencil marks as a 3x3 mini-grid, centered on the value spot.
+                let note_style = Style::default().fg(DIM).bg(bg).add_modifier(Modifier::DIM);
+                for d in 1..=9u8 {
+                    if game.notes[i] & (1 << d) != 0 {
+                        let k = u16::from(d - 1);
+                        buf[(x + 1 + 2 * (k % 3), y + k / 3)]
+                            .set_char(char::from(b'0' + d))
+                            .set_style(note_style);
                     }
                 }
-                if !any && is_sel {
+                if game.notes[i] == 0 && is_sel {
                     buf[(x + CELL_W / 2, ym)]
                         .set_char('·')
                         .set_style(Style::default().fg(Color::White).bg(bg));
@@ -280,46 +276,13 @@ fn draw_board(frame: &mut Frame, game: &Game, ox: u16, oy: u16, hits: &mut Vec<H
 
     // Grid lines.
     for gy in 0..BOARD_H {
-        let y = oy + gy;
-        let hline = is_hline(y, oy);
         for gx in 0..BOARD_W {
-            let x = ox + gx;
-            let vline = gx % (CELL_W + 1) == 0;
-            if !hline && !vline {
-                continue;
-            }
-            let on_box_v = [0, 3 * (CELL_W + 1), 6 * (CELL_W + 1), 9 * (CELL_W + 1)].contains(&gx);
-            let cell = &mut buf[(x, y)];
-            if hline && vline {
-                cell.set_char('┼');
-                cell.set_fg(if on_box_v { GRID_BOX } else { GRID_THIN });
-            } else if hline {
-                cell.set_char('─');
-                cell.set_fg(GRID_BOX);
-            } else {
-                cell.set_char('│');
-                cell.set_fg(if on_box_v { GRID_BOX } else { GRID_THIN });
-            }
-            if hline {
-                // Thicken box guides with bold. Every hline is a box guide.
-                cell.set_style(Style::default().fg(GRID_BOX).add_modifier(Modifier::BOLD));
-                if vline && !on_box_v {
-                    cell.set_char('┿');
-                } else if vline {
-                    cell.set_char('╂');
+            if let Some((glyph, heavy)) = grid_glyph(gx, gy) {
+                buf[(ox + gx, oy + gy)].set_char(glyph).set_fg(if heavy {
+                    GRID_BOX
                 } else {
-                    cell.set_char('═');
-                }
-            }
-            // Outer corners.
-            if (gx == 0 || gx == BOARD_W - 1) && (gy == 0 || gy == BOARD_H - 1) {
-                let ch = match (gx == 0, gy == 0) {
-                    (true, true) => '╔',
-                    (false, true) => '╗',
-                    (true, false) => '╚',
-                    (false, false) => '╝',
-                };
-                cell.set_char(ch);
+                    GRID_THIN
+                });
             }
         }
     }
@@ -331,15 +294,12 @@ struct Button<'a> {
     title: &'a str,
     hint: &'a str,
     active: bool,
-    accent: bool,
-    action: ClickAction,
+    action: Action,
 }
 
 fn draw_button(frame: &mut Frame, rect: Rect, btn: &Button, hits: &mut Vec<Hit>) {
     let border = if btn.active {
         Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
-    } else if btn.accent {
-        Style::default().fg(ACCENT)
     } else {
         Style::default().fg(GRID_THIN)
     };
@@ -347,20 +307,12 @@ fn draw_button(frame: &mut Frame, rect: Rect, btn: &Button, hits: &mut Vec<Hit>)
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(border);
+    let inner = block.inner(rect);
     frame.render_widget(block, rect);
-    hits.push(Hit::new(rect, btn.action));
-    if rect.width < 3 || rect.height < 2 {
-        return;
-    }
-    let inner = Rect {
-        x: rect.x + 1,
-        y: rect.y + 1,
-        width: rect.width.saturating_sub(2),
-        height: rect.height.saturating_sub(2),
-    };
+    push_hit(hits, rect, Some(btn.action));
     let line = Line::from(vec![
         Span::styled(
-            btn.title.to_string(),
+            btn.title,
             Style::default()
                 .fg(if btn.active { ACCENT } else { INK })
                 .add_modifier(Modifier::BOLD),
@@ -373,11 +325,30 @@ fn draw_button(frame: &mut Frame, rect: Rect, btn: &Button, hits: &mut Vec<Hit>)
     frame.render_widget(Paragraph::new(line).alignment(Alignment::Center), inner);
 }
 
-fn header_lines(game: &Game) -> (Line<'static>, Line<'static>) {
+/// "best 08:12", or a dash before the first hint-free solve.
+fn best_label(best: Option<Duration>) -> String {
+    best.map_or_else(
+        || "best —".to_string(),
+        |t| format!("best {}", format_time(t)),
+    )
+}
+
+/// `text` cut to `width` columns, ending in "…" when it had to be cut.
+fn fit(text: &str, width: usize) -> String {
+    if Line::raw(text).width() <= width {
+        return text.to_string();
+    }
+    let mut out: String = text.chars().take(width.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+/// The two header lines for a header `width` columns wide.
+fn header_lines(game: &Game, best: Option<Duration>, width: u16) -> (Line<'static>, Line<'static>) {
     let diff = game.difficulty;
     let (done, total) = game.progress();
     let bar_w = 14;
-    let filled = done * bar_w / total;
+    let filled = done * bar_w / total.max(1);
     let bar: String = "█".repeat(filled) + &"░".repeat(bar_w - filled);
     let top = Line::from(vec![
         Span::styled(
@@ -393,19 +364,40 @@ fn header_lines(game: &Game) -> (Line<'static>, Line<'static>) {
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!("{}  ", diff.blurb()),
+            format!("{}   ", diff.blurb()),
             Style::default().fg(DIM).add_modifier(Modifier::DIM),
         ),
-        Span::styled(
-            format!("{} offline", if done == total { "✓" } else { "○" }),
-            Style::default().fg(DIM),
-        ),
+        Span::styled(best_label(best), Style::default().fg(AMBER)),
     ]);
-    let status_msg = game
-        .message(std::time::Duration::from_secs(4))
-        .unwrap_or("")
-        .to_string();
-    let bottom = Line::from(vec![
+    let mut bottom = if game.completed {
+        Line::from(vec![
+            Span::styled(
+                format!("✓ Solved in {}   ", format_time(game.elapsed())),
+                Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("✖ {}   💡 {}   ", game.mistakes, game.hints_used),
+                Style::default().fg(DIM),
+            ),
+            Span::styled("N new puzzle · d change level", Style::default().fg(INK)),
+        ])
+    } else {
+        stats_line(game, done, total, &bar)
+    };
+    // Transient messages go last, clipped visibly rather than mid-word.
+    if let Some(msg) = game.message(Duration::from_secs(4)) {
+        let room = usize::from(width).saturating_sub(bottom.width() + 3);
+        bottom.push_span(Span::styled(
+            format!("   {}", fit(msg, room)),
+            Style::default().fg(AMBER),
+        ));
+    }
+    (top, bottom)
+}
+
+/// Clock, mistakes, hints, progress and notes mode for a game in play.
+fn stats_line(game: &Game, done: usize, total: usize, bar: &str) -> Line<'static> {
+    Line::from(vec![
         Span::styled(
             format!("⏱ {}  ", format_time(game.elapsed())),
             Style::default().fg(INK),
@@ -418,10 +410,7 @@ fn header_lines(game: &Game) -> (Line<'static>, Line<'static>) {
             format!("💡 {}   ", game.hints_used),
             Style::default().fg(DIM),
         ),
-        Span::styled(
-            format!("{bar} {done}/{total}   "),
-            Style::default().fg(if done == total { GREEN } else { DIM }),
-        ),
+        Span::styled(format!("{bar} {done}/{total}   "), Style::default().fg(DIM)),
         Span::styled(
             if game.notes_mode {
                 "✎ NOTES ON"
@@ -432,9 +421,7 @@ fn header_lines(game: &Game) -> (Line<'static>, Line<'static>) {
                 .fg(if game.notes_mode { AMBER } else { DIM })
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(format!("   {status_msg}"), Style::default().fg(AMBER)),
-    ]);
-    (top, bottom)
+    ])
 }
 
 fn popup_block(title: &str) -> Block<'static> {
@@ -446,88 +433,103 @@ fn popup_block(title: &str) -> Block<'static> {
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(ACCENT))
-        .style(Style::default().bg(Color::Rgb(15, 23, 42)))
+        .style(Style::default().bg(POPUP_BG))
 }
 
-fn draw_levels_popup(
-    frame: &mut Frame,
-    area: Rect,
-    cursor: usize,
-    for_menu: bool,
-    hits: &mut Vec<Hit>,
-) {
-    let w = 46u16;
-    let h = 16u16;
+/// Clear a centered `w`x`h` box, frame it, and return `(frame, content)`
+/// where content is the inside with one column of padding.
+fn popup(frame: &mut Frame, area: Rect, w: u16, h: u16, title: &str) -> (Rect, Rect) {
     let r = centered_rect(area, w, h);
     frame.render_widget(Clear, r);
-    frame.render_widget(popup_block("New game — pick difficulty"), r);
-    hits.push(Hit::new(r, ClickAction::Close));
-    let mut lines: Vec<Line> = vec![
-        Line::from(Span::styled(
-            " arrows/hjkl + Enter, keys 1-5, or click ",
-            Style::default().fg(DIM).add_modifier(Modifier::DIM),
-        )),
-        Line::from(""),
-    ];
-    for (i, d) in Difficulty::all().iter().enumerate() {
-        let sel = i == cursor;
-        let marker = if sel { "▶" } else { " " };
-        lines.push(Line::from(vec![Span::styled(
-            format!(" {marker} {}. {:<6}  {} ", i + 1, d.name(), d.blurb()),
-            Style::default()
-                .fg(if sel { Color::White } else { INK })
-                .bg(if sel { SEL_BG } else { Color::Reset })
-                .add_modifier(Modifier::BOLD),
-        )]));
-        // Register a click row for each option.
-        let row_y = r.y + 3 + i as u16;
-        if row_y < r.y + r.height - 1 {
-            hits.push(Hit::new(
-                Rect {
-                    x: r.x + 1,
-                    y: row_y,
-                    width: r.width.saturating_sub(2),
-                    height: 1,
-                },
-                if for_menu {
-                    ClickAction::MenuChoice(i)
-                } else {
-                    ClickAction::LevelChoice(i)
-                },
-            ));
-        }
-    }
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled(" Enter start   ", Style::default().fg(DIM)),
-        Span::styled("Esc cancel ", Style::default().fg(DIM)),
-    ]));
-    let inner = Rect {
-        x: r.x + 2,
-        y: r.y + 1,
-        width: r.width.saturating_sub(4),
-        height: r.height.saturating_sub(2),
-    };
-    frame.render_widget(Paragraph::new(lines).alignment(Alignment::Left), inner);
+    let block = popup_block(title);
+    let inner = block.inner(r).inner(Margin::new(1, 0));
+    frame.render_widget(block, r);
+    (r, inner)
 }
 
-fn draw_help_popup(frame: &mut Frame, area: Rect, hits: &mut Vec<Hit>) {
-    let r = centered_rect(area, 56, 21);
-    frame.render_widget(Clear, r);
-    frame.render_widget(popup_block("How to play  (?)"), r);
-    hits.push(Hit::new(r, ClickAction::Close));
-    let rows = vec![
+/// Text width of one level-menu row.
+const MENU_TEXT_W: usize = 60;
+
+/// A menu of levels (and, on the title screen, "Continue"), with best
+/// times. Returns the popup's frame; each row registers its own click.
+fn draw_levels_menu(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    rows: &[MenuRow],
+    cursor: usize,
+    footer: &str,
+    hits: &mut Vec<Hit>,
+) -> Rect {
+    let title = if rows.contains(&MenuRow::Continue) {
+        "Welcome back"
+    } else {
+        "New game — pick difficulty"
+    };
+    let h = rows.len() as u16 + 6;
+    let (r, inner) = popup(frame, area, MENU_TEXT_W as u16 + 4, h, title);
+    let mut lines: Vec<Line> = vec![
+        Line::styled(
+            " arrows/hjkl + Enter, keys 1-5, or click",
+            Style::default().fg(DIM).add_modifier(Modifier::DIM),
+        ),
+        Line::from(""),
+    ];
+    for (i, &row) in rows.iter().enumerate() {
+        let sel = i == cursor;
+        let marker = if sel { "▶" } else { " " };
+        let (text, action) = match row {
+            MenuRow::Continue => {
+                let Some(g) = &app.resume else { continue };
+                let (done, total) = g.progress();
+                let text = format!(
+                    " {marker} c. Continue  {} · {} · {done}/{total} done",
+                    g.difficulty.name(),
+                    format_time(g.elapsed()),
+                );
+                (text, Action::Continue)
+            }
+            MenuRow::Level(d) => {
+                let best = best_label(app.stats.level(d).best());
+                let text = format!(
+                    " {marker} {}. {:<6}  {:<31}  {best:>12}",
+                    d.index() + 1,
+                    d.name(),
+                    d.blurb(),
+                );
+                (text, Action::StartLevel(d))
+            }
+        };
+        lines.push(Line::styled(
+            format!("{text:<MENU_TEXT_W$}"),
+            Style::default()
+                .fg(if sel { Color::White } else { INK })
+                .bg(if sel { SEL_BG } else { POPUP_BG })
+                .add_modifier(Modifier::BOLD),
+        ));
+        let hit = Rect::new(r.x + 1, inner.y + 2 + i as u16, r.width - 2, 1);
+        push_hit(hits, hit, Some(action));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::styled(footer.to_string(), Style::default().fg(DIM)));
+    frame.render_widget(Paragraph::new(lines), inner);
+    r
+}
+
+fn draw_help(frame: &mut Frame, area: Rect) {
+    let rows = [
         ("Move", "arrows / hjkl, or click a cell"),
         ("Fill", "1-9  (click a cell, then a number)"),
         ("Notes", "n toggles pencil marks, then 1-9"),
-        ("Erase", "0 / Backspace / Delete / e"),
+        ("Erase", "0 / x / e / Backspace / Delete"),
         ("Undo", "u  or Ctrl+Z"),
-        ("Hint", "H (capital) — reveals & locks a cell"),
+        ("Hint", "H (capital) — fills the next logical cell"),
         ("New", "N (capital) — fresh puzzle, same level"),
         ("Level", "d — change difficulty"),
-        ("Pause", "p — hides the board, stops timer"),
+        ("Pause", "p, or switch windows — stops the clock"),
+        ("Saves", "automatic — Continue from the title screen"),
         ("Quit", "q    •    close popups: Esc"),
-        ("Mouse", "everything is clickable below"),
+        ("Mouse", "click cells, the number pad, buttons"),
     ];
     let mut lines: Vec<Line> = vec![
         Line::from(Span::styled(
@@ -550,67 +552,76 @@ fn draw_help_popup(frame: &mut Frame, area: Rect, hits: &mut Vec<Hit>) {
         " press Esc or click anywhere to close ",
         Style::default().fg(DIM).add_modifier(Modifier::DIM),
     )));
-    let inner = Rect {
-        x: r.x + 2,
-        y: r.y + 1,
-        width: r.width.saturating_sub(4),
-        height: r.height.saturating_sub(2),
-    };
+    let (_, inner) = popup(frame, area, 56, lines.len() as u16 + 2, "How to play  (?)");
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-fn draw_win_popup(frame: &mut Frame, area: Rect, game: &Game, hits: &mut Vec<Hit>) {
-    let r = centered_rect(area, 48, 13);
-    frame.render_widget(Clear, r);
-    frame.render_widget(popup_block("Solved!"), r);
-    let inner = Rect {
-        x: r.x + 2,
-        y: r.y + 1,
-        width: r.width.saturating_sub(4),
-        height: r.height.saturating_sub(2),
+fn draw_paused(frame: &mut Frame, area: Rect) {
+    let (_, inner) = popup(frame, area, 41, 6, "Paused");
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(""),
+            Line::styled("board hidden, timer stopped", Style::default().fg(INK)),
+            Line::styled(
+                "press p or click anywhere to resume",
+                Style::default().fg(DIM),
+            ),
+        ])
+        .alignment(Alignment::Center),
+        inner,
+    );
+}
+
+/// Returns the popup's frame and its two buttons.
+fn draw_won(frame: &mut Frame, area: Rect, game: &Game, app: &App) -> (Rect, Rect, Rect) {
+    let (r, inner) = popup(frame, area, 48, 13, "Solved!");
+    let best = app.stats.level(game.difficulty).best();
+    let record = if app.new_best {
+        Line::styled(
+            "★ New best time! ★",
+            Style::default().fg(AMBER).add_modifier(Modifier::BOLD),
+        )
+    } else if game.hints_used > 0 {
+        Line::styled(
+            "best times count hint-free solves only",
+            Style::default().fg(DIM),
+        )
+    } else {
+        Line::styled(best_label(best), Style::default().fg(DIM))
     };
     let lines = vec![
-        Line::from(Span::styled(
+        Line::styled(
             format!("{} puzzle cleared", game.difficulty.name()),
             Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
-        )),
+        ),
         Line::from(""),
-        Line::from(vec![
-            Span::styled(
-                format!("Time {}   ", format_time(game.elapsed())),
-                Style::default().fg(INK),
+        Line::styled(
+            format!(
+                "Time {}   Mistakes {}   Hints {}",
+                format_time(game.elapsed()),
+                game.mistakes,
+                game.hints_used
             ),
-            Span::styled(
-                format!("Mistakes {}   ", game.mistakes),
-                Style::default().fg(INK),
-            ),
-            Span::styled(
-                format!("Hints {}", game.hints_used),
-                Style::default().fg(INK),
-            ),
-        ]),
+            Style::default().fg(INK),
+        ),
+        record,
         Line::from(""),
-        Line::from(Span::styled(
-            "N new puzzle • d change level • q quit",
+        Line::styled(
+            "Enter new · d levels · Esc view board",
             Style::default().fg(DIM),
-        )),
+        ),
     ];
     frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center), inner);
     // Clickable footer buttons.
     let bw = 12u16;
     let by = r.y + r.height - 4;
     let bx = r.x + (r.width.saturating_sub(bw * 2 + 2)) / 2;
-    let r1 = Rect {
-        x: bx,
-        y: by,
-        width: bw,
-        height: 3,
-    };
-    let r2 = Rect {
-        x: bx + bw + 2,
-        y: by,
-        width: bw,
-        height: 3,
+    let new_btn = Rect::new(bx, by, bw, 3);
+    let levels_btn = Rect::new(bx + bw + 2, by, bw, 3);
+    let button = || {
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
     };
     frame.render_widget(
         Paragraph::new(Line::styled(
@@ -618,143 +629,125 @@ fn draw_win_popup(frame: &mut Frame, area: Rect, game: &Game, hits: &mut Vec<Hit
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         ))
         .alignment(Alignment::Center)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded),
-        ),
-        r1,
+        .block(button()),
+        new_btn,
     );
     frame.render_widget(
         Paragraph::new(Line::styled(" ◈ Levels ", Style::default().fg(INK)))
             .alignment(Alignment::Center)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded),
-            ),
-        r2,
+            .block(button()),
+        levels_btn,
     );
-    hits.push(Hit::new(r1, ClickAction::WinNew));
-    hits.push(Hit::new(r2, ClickAction::WinLevels));
+    (r, new_btn, levels_btn)
 }
 
-// ------------------------------------------------------------ main render
-
-/// Draw the whole screen; return click targets for the event loop.
-pub fn render(frame: &mut Frame, st: &RenderState) -> Vec<Hit> {
-    let mut hits = Vec::new();
-    let area = frame.area();
+fn draw_dealing(frame: &mut Frame, area: Rect, level: Difficulty) {
+    const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    let tick = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() / 80);
+    let spin = SPINNER[(tick % SPINNER.len() as u128) as usize];
+    let (_, inner) = popup(frame, area, 40, 6, "Dealing");
     frame.render_widget(
-        Block::default().style(Style::default().bg(BG).fg(INK)),
-        area,
-    );
-
-    if area.width < MIN_W || area.height < MIN_H {
-        let r = centered_rect(area, 44, 7);
-        frame.render_widget(Clear, r);
-        frame.render_widget(popup_block("Terminal too small"), r);
-        let inner = Rect {
-            x: r.x + 2,
-            y: r.y + 1,
-            width: r.width.saturating_sub(4),
-            height: r.height.saturating_sub(2),
-        };
-        frame.render_widget(
-            Paragraph::new(vec![
-                Line::from(Span::raw(format!("need at least {}x{}", MIN_W, MIN_H))),
-                Line::from(Span::raw(format!("now {}x{}", area.width, area.height))),
-                Line::from(Span::raw("enlarge the window, then keep playing")),
-            ])
-            .alignment(Alignment::Center),
-            inner,
-        );
-        return hits;
-    }
-
-    let Some(game) = st.game else {
-        // Title screen: difficulty menu, big and welcoming.
-        let title = vec![
-            Line::from(Span::styled(
-                "TUDOKU",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-            )),
-            Line::from(Span::styled(
-                "offline sudoku for your terminal",
-                Style::default().fg(DIM),
-            )),
+        Paragraph::new(vec![
             Line::from(""),
-            Line::from(Span::styled(
-                "pick a difficulty to deal a fresh puzzle",
+            Line::styled(
+                format!("{spin} shuffling a fresh {} puzzle", level.name()),
                 Style::default().fg(INK),
-            )),
-            Line::from(""),
-        ];
-        let tr = Rect {
-            x: area.x,
-            y: area.y + (area.height.saturating_sub(15)) / 2 - 6,
-            width: area.width,
-            height: 5,
-        };
-        frame.render_widget(Paragraph::new(title).alignment(Alignment::Center), tr);
-        draw_levels_popup(frame, area, st.menu_cursor, true, &mut hits);
-        if st.show_help {
-            hits.push(Hit::new(area, ClickAction::Blocked));
-            draw_help_popup(frame, area, &mut hits);
-        }
-        return hits;
-    };
-
-    // Header (2 lines).
-    let (top, bottom) = header_lines(game);
-    frame.render_widget(
-        Paragraph::new(vec![top, bottom]),
-        Rect {
-            x: area.x,
-            y: area.y,
-            width: area.width,
-            height: 2,
-        },
+            ),
+            Line::styled("graded by technique, logic only", Style::default().fg(DIM)),
+        ])
+        .alignment(Alignment::Center),
+        inner,
     );
-    // Divider.
-    {
-        let buf = frame.buffer_mut();
-        for x in area.x..area.x + area.width {
-            buf[(x, area.y + 2)].set_char('─').set_fg(GRID_THIN);
+}
+
+/// Draw one overlay and register its click areas. Every overlay first
+/// covers the whole screen, so nothing underneath can be clicked.
+fn draw_overlay(frame: &mut Frame, area: Rect, app: &App, overlay: Overlay, hits: &mut Vec<Hit>) {
+    // Clicking outside a popup is the same as pressing Esc.
+    push_hit(hits, area, Some(Action::Close));
+    match overlay {
+        Overlay::Help => draw_help(frame, area),
+        Overlay::Paused => draw_paused(frame, area),
+        Overlay::Levels { cursor } => {
+            let mut rows = Vec::new();
+            let levels = Difficulty::ALL.map(MenuRow::Level);
+            let footer = " Enter start   Esc cancel";
+            let r = draw_levels_menu(frame, area, app, &levels, cursor, footer, &mut rows);
+            push_hit(hits, r, None);
+            hits.extend(rows);
+        }
+        Overlay::Won => {
+            let Some(game) = &app.game else { return };
+            let (r, new_btn, levels_btn) = draw_won(frame, area, game, app);
+            push_hit(hits, r, None);
+            push_hit(hits, new_btn, Some(Action::NewGame));
+            push_hit(hits, levels_btn, Some(Action::OpenLevels));
         }
     }
+}
 
-    // Board on the left, number pad + action buttons in a side panel on the
-    // right — centered together as one block. This pins the required
-    // terminal height to the board's own height (a fixed 31 rows) instead of
-    // stacking the panel underneath it, since terminals are almost always
-    // much wider than they are tall.
-    let board_y = area.y + 3;
-    let ox = area.x + area.width.saturating_sub(BLOCK_W) / 2;
-    draw_board(frame, game, ox, board_y, &mut hits);
+fn draw_too_small(frame: &mut Frame, area: Rect) {
+    let (_, inner) = popup(frame, area, 44, 7, "Terminal too small");
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::raw(format!("need at least {MIN_W}x{MIN_H}")),
+            Line::raw(format!("now {}x{}", area.width, area.height)),
+            Line::raw("enlarge the window, then keep playing"),
+        ])
+        .alignment(Alignment::Center),
+        inner,
+    );
+}
 
-    let panel_x = ox + BOARD_W + PANEL_GAP;
-    let panel_y = board_y + (BOARD_H - PANEL_H) / 2;
+fn draw_title(frame: &mut Frame, area: Rect, app: &App, hits: &mut Vec<Hit>) {
+    let rows = app.menu_rows();
+    let prompt = if app.resume.is_some() {
+        "pick up where you left off, or deal a fresh puzzle"
+    } else {
+        "pick a difficulty to deal a fresh puzzle"
+    };
+    let title = vec![
+        Line::styled(
+            "TUDOKU",
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ),
+        Line::styled("offline sudoku for your terminal", Style::default().fg(DIM)),
+        Line::from(""),
+        Line::styled(prompt, Style::default().fg(INK)),
+    ];
+    let menu = centered_rect(area, MENU_TEXT_W as u16 + 4, rows.len() as u16 + 6);
+    let tr = Rect::new(area.x, menu.y.saturating_sub(6), area.width, 5);
+    frame.render_widget(Paragraph::new(title).alignment(Alignment::Center), tr);
+    // Under a popup (help) the menu would only peek out around it.
+    if app.overlays.is_empty() {
+        let footer = " Enter start   ? help   q quit";
+        draw_levels_menu(frame, area, app, &rows, app.menu_cursor, footer, hits);
+    }
+}
 
+fn draw_panel(frame: &mut Frame, game: &Game, x: u16, y: u16, hits: &mut Vec<Hit>) {
     // Number pad: 3x3 grid of digit buttons.
     let remaining = game.remaining();
     for d in 1..=9u8 {
         let col = u16::from(d - 1) % 3;
         let row = u16::from(d - 1) / 3;
-        let r = Rect {
-            x: panel_x + col * (DIGIT_W + DIGIT_GAP),
-            y: panel_y + row * CELL_H,
-            width: DIGIT_W,
-            height: CELL_H,
-        };
-        let left = remaining[d as usize];
+        let r = Rect::new(
+            x + col * (DIGIT_W + DIGIT_GAP),
+            y + row * CELL_H,
+            DIGIT_W,
+            CELL_H,
+        );
+        let left = remaining[usize::from(d)];
         let done = left == 0;
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(if done { GRID_THIN } else { ACCENT }));
+        let inner = block.inner(r);
         frame.render_widget(block, r);
-        hits.push(Hit::new(r, ClickAction::Digit(d)));
+        push_hit(hits, r, Some(Action::Board(BoardAction::Digit(d))));
         let label = if done {
             Line::styled(
                 " ✓ ",
@@ -773,200 +766,163 @@ pub fn render(frame: &mut Frame, st: &RenderState) -> Vec<Hit> {
                 ),
             ])
         };
-        frame.render_widget(
-            Paragraph::new(label).alignment(Alignment::Center),
-            Rect {
-                x: r.x,
-                y: r.y + 1,
-                width: r.width,
-                height: 1,
-            },
-        );
+        frame.render_widget(Paragraph::new(label).alignment(Alignment::Center), inner);
     }
 
     // Action buttons: two columns of four, below the number pad.
-    let btn_y0 = panel_y + DIGIT_GRID_H + PANEL_GROUP_GAP;
+    let btn_y0 = y + DIGIT_GRID_H + PANEL_GROUP_GAP;
     let specs = [
         Button {
             title: "Notes",
             hint: if game.notes_mode { "on" } else { "n" },
             active: game.notes_mode,
-            accent: false,
-            action: ClickAction::Notes,
+            action: Action::Board(BoardAction::ToggleNotes),
         },
         Button {
             title: "Undo",
             hint: "u",
             active: false,
-            accent: false,
-            action: ClickAction::Undo,
+            action: Action::Board(BoardAction::Undo),
         },
         Button {
             title: "Hint",
             hint: "H",
             active: false,
-            accent: false,
-            action: ClickAction::Hint,
+            action: Action::Board(BoardAction::Hint),
         },
         Button {
             title: "Erase",
             hint: "e",
             active: false,
-            accent: false,
-            action: ClickAction::Erase,
+            action: Action::Board(BoardAction::Erase),
         },
         Button {
             title: "New",
             hint: "N",
             active: false,
-            accent: false,
-            action: ClickAction::New,
+            action: Action::NewGame,
         },
         Button {
             title: "Level",
             hint: "d",
             active: false,
-            accent: false,
-            action: ClickAction::Level,
+            action: Action::OpenLevels,
         },
         Button {
             title: "Pause",
             hint: "p",
             active: false,
-            accent: false,
-            action: ClickAction::Pause,
+            action: Action::Pause,
         },
         Button {
             title: "Help",
             hint: "?",
             active: false,
-            accent: false,
-            action: ClickAction::Help,
+            action: Action::OpenHelp,
         },
     ];
     for (k, btn) in specs.iter().enumerate() {
         let col = k as u16 % 2;
         let row = k as u16 / 2;
-        let r = Rect {
-            x: panel_x + col * (BTN_W + BTN_GAP),
-            y: btn_y0 + row * CELL_H,
-            width: BTN_W,
-            height: CELL_H,
-        };
-        draw_button(frame, r, btn, &mut hits);
+        let r = Rect::new(
+            x + col * (BTN_W + BTN_GAP),
+            btn_y0 + row * CELL_H,
+            BTN_W,
+            CELL_H,
+        );
+        draw_button(frame, r, btn, hits);
     }
+}
+
+fn draw_game(frame: &mut Frame, area: Rect, app: &App, game: &Game, hits: &mut Vec<Hit>) {
+    // Board on the left, number pad + action buttons in a side panel on the
+    // right, centered together as one block. This pins the required
+    // terminal height to the board's own height instead of stacking the
+    // panel underneath it, since terminals are almost always much wider
+    // than they are tall. The header lines up with the board's left edge.
+    let (ox, oy) = board_origin(area);
+    let top_y = layout_top(area);
+    let header = Rect::new(ox, top_y, area.right() - ox, 2);
+    let best = app.stats.level(game.difficulty).best();
+    let (top, bottom) = header_lines(game, best, header.width);
+    frame.render_widget(Paragraph::new(vec![top, bottom]), header);
+    frame.render_widget(
+        Paragraph::new("─".repeat(usize::from(BLOCK_W))).style(Style::default().fg(GRID_THIN)),
+        Rect::new(ox, top_y + 2, BLOCK_W, 1),
+    );
+
+    draw_board(frame, game, ox, oy, hits);
+    let panel_x = ox + BOARD_W + PANEL_GAP;
+    let panel_y = oy + (BOARD_H - PANEL_H) / 2;
+    draw_panel(frame, game, panel_x, panel_y, hits);
 
     // Footer hints, directly under the board.
-    let footer_y = board_y + BOARD_H;
-    if footer_y < area.y + area.height {
-        let footer = Line::from(vec![
-            Span::styled(" arrows/hjkl ", Style::default().fg(DIM)),
-            Span::styled("1-9 fill ", Style::default().fg(DIM)),
-            Span::styled("n notes ", Style::default().fg(DIM)),
-            Span::styled("u undo ", Style::default().fg(DIM)),
-            Span::styled("H hint ", Style::default().fg(DIM)),
-            Span::styled("e erase ", Style::default().fg(DIM)),
-            Span::styled("d level ", Style::default().fg(DIM)),
-            Span::styled("? help ", Style::default().fg(DIM)),
-            Span::styled("q quit", Style::default().fg(DIM)),
-        ]);
+    let footer_y = oy + BOARD_H;
+    if footer_y < area.bottom() {
+        let footer =
+            "arrows/hjkl  1-9 fill  n notes  u undo  H hint  e erase  d level  ? help  q quit";
         frame.render_widget(
-            Paragraph::new(footer).alignment(Alignment::Center),
-            Rect {
-                x: area.x,
-                y: footer_y,
-                width: area.width,
-                height: 1,
-            },
+            Paragraph::new(Line::styled(footer, Style::default().fg(DIM))),
+            Rect::new(ox, footer_y, area.right() - ox, 1),
         );
+    }
+}
+
+// ------------------------------------------------------------ main render
+
+/// Draw the whole screen; return click targets for the event loop.
+pub fn render(frame: &mut Frame, app: &App) -> Vec<Hit> {
+    let mut hits = Vec::new();
+    let area = frame.area();
+    frame.render_widget(
+        Block::default().style(Style::default().bg(BG).fg(INK)),
+        area,
+    );
+
+    if area.width < MIN_W || area.height < MIN_H {
+        draw_too_small(frame, area);
+        return hits;
     }
 
-    if st.generating {
-        let r = centered_rect(area, 30, 5);
-        frame.render_widget(Clear, r);
-        frame.render_widget(popup_block("Dealing"), r);
-        frame.render_widget(
-            Paragraph::new(Line::styled(
-                "shuffling a fresh puzzle…",
-                Style::default().fg(INK),
-            ))
-            .alignment(Alignment::Center),
-            Rect {
-                x: r.x + 1,
-                y: r.y + 2,
-                width: r.width.saturating_sub(2),
-                height: 1,
-            },
-        );
+    match &app.game {
+        None => draw_title(frame, area, app, &mut hits),
+        Some(game) => draw_game(frame, area, app, game, &mut hits),
     }
-    if game.completed {
-        hits.push(Hit::new(area, ClickAction::Blocked));
-        draw_win_popup(frame, area, game, &mut hits);
-        if st.show_levels {
-            hits.push(Hit::new(area, ClickAction::Blocked));
-            draw_levels_popup(frame, area, st.level_cursor, false, &mut hits);
-        }
-    } else if st.show_levels {
-        hits.push(Hit::new(area, ClickAction::Blocked));
-        draw_levels_popup(frame, area, st.level_cursor, false, &mut hits);
-    } else if game.paused {
-        hits.push(Hit::new(area, ClickAction::Blocked));
-        let r = centered_rect(area, 34, 7);
-        frame.render_widget(Clear, r);
-        frame.render_widget(popup_block("Paused"), r);
-        frame.render_widget(
-            Paragraph::new(vec![
-                Line::from(Span::styled(
-                    "board hidden, timer stopped",
-                    Style::default().fg(INK),
-                )),
-                Line::from(Span::styled(
-                    "press p or click to resume",
-                    Style::default().fg(DIM),
-                )),
-            ])
-            .alignment(Alignment::Center),
-            Rect {
-                x: r.x + 2,
-                y: r.y + 2,
-                width: r.width.saturating_sub(4),
-                height: 3,
-            },
-        );
-        hits.push(Hit::new(r, ClickAction::Pause));
-    } else if st.show_help {
-        hits.push(Hit::new(area, ClickAction::Blocked));
-        draw_help_popup(frame, area, &mut hits);
+    // Only the top popup is drawn: nothing under it can be used anyway,
+    // and half-covered frames would peek out around it.
+    if let Some(overlay) = app.top() {
+        draw_overlay(frame, area, app, overlay, &mut hits);
     }
-
+    if let Some(level) = app.dealing {
+        push_hit(&mut hits, area, None);
+        draw_dealing(frame, area, level);
+    }
     hits
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::Store;
+    use crate::sudoku::test_board;
     use ratatui::{Terminal, backend::TestBackend};
 
-    fn test_game() -> Game {
-        let (p, s) = Game::test_board();
-        Game::new(Difficulty::Easy, p, s)
+    fn app_with_game() -> App {
+        let mut app = App::new(Store::none());
+        let (p, s) = test_board();
+        app.start_game(Game::new(Difficulty::Easy, p, s));
+        app
     }
 
-    fn draw(state: &RenderState, w: u16, h: u16) -> (Vec<String>, Vec<Hit>) {
-        let backend = TestBackend::new(w, h);
-        let mut terminal = Terminal::new(backend).unwrap();
+    fn draw(app: &App, w: u16, h: u16) -> (Vec<String>, Vec<Hit>) {
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
         let mut hits = Vec::new();
-        terminal
-            .draw(|f| {
-                hits = render(f, state);
-            })
-            .unwrap();
-        let buf = terminal.backend().buffer().clone();
-        let area = buf.area;
-        let lines: Vec<String> = (0..area.height)
+        terminal.draw(|f| hits = render(f, app)).unwrap();
+        let buf = terminal.backend().buffer();
+        let lines = (0..buf.area.height)
             .map(|y| {
-                (0..area.width)
-                    .map(|x| buf[(x, y)].symbol().to_string())
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol())
                     .collect::<String>()
             })
             .collect();
@@ -977,40 +933,82 @@ mod tests {
         lines.join("\n")
     }
 
+    /// Screen width for tests: a little roomier than the minimum.
+    const W: u16 = 110;
+
+    fn cell_hits(hits: &[Hit]) -> usize {
+        hits.iter()
+            .filter(|h| matches!(h.action, Some(Action::Board(BoardAction::Select(..)))))
+            .count()
+    }
+
+    /// Text row `dy` of a cell's interior, as drawn `W` columns wide.
+    fn cell_row(lines: &[String], row: usize, col: usize, dy: u16) -> String {
+        let (ox, oy) = board_origin(Rect::new(0, 0, W, 50));
+        let (x, y) = cell_screen(ox, oy, row, col);
+        lines[usize::from(y + dy)]
+            .chars()
+            .skip(usize::from(x))
+            .take(usize::from(CELL_W))
+            .collect()
+    }
+
+    /// The glyph drawn at board offset `(gx, gy)`, `W` columns wide.
+    fn board_char(lines: &[String], gx: u16, gy: u16) -> char {
+        let (ox, oy) = board_origin(Rect::new(0, 0, W, 50));
+        let line = &lines[usize::from(oy + gy)];
+        line.chars().nth(usize::from(ox + gx)).unwrap()
+    }
+
     #[test]
     fn cells_render_square_on_typical_fonts() {
-        // Terminal glyph cells run ~2x taller than wide, so CELL_W should be
-        // ~2x CELL_H for a visually square grid. Tolerate ±15% for fonts
-        // whose glyph aspect strays from exactly 2:1.
-        let ratio = CELL_W as f32 / CELL_H as f32;
+        // Terminal glyph cells run ~2x taller than wide, so the grid pitch
+        // (a cell plus its line) should be ~2x as wide as it is tall.
+        // Tolerate ±15% for fonts whose glyph aspect strays from 2:1.
+        let ratio = f32::from(CELL_W + 1) / f32::from(CELL_H + 1);
         assert!(
             (ratio - 2.0).abs() <= 0.3,
-            "cell aspect {CELL_W}x{CELL_H} is not square on ~2:1 fonts"
+            "cell pitch {}x{} is not square on ~2:1 fonts",
+            CELL_W + 1,
+            CELL_H + 1
         );
     }
 
     #[test]
+    fn grid_lines_use_matching_junctions() {
+        let (lines, _) = draw(&app_with_game(), W, 50);
+        let pitch_x = CELL_W + 1;
+        let pitch_y = CELL_H + 1;
+        let at = |cx: u16, cy: u16| board_char(&lines, cx * pitch_x, cy * pitch_y);
+        // Corners and edge junctions: T-pieces, never crosses poking out.
+        assert_eq!(at(0, 0), '┏');
+        assert_eq!(at(9, 9), '┛');
+        assert_eq!(at(1, 0), '┯', "cell line meets the top edge");
+        assert_eq!(at(3, 0), '┳', "box line meets the top edge");
+        assert_eq!(at(0, 1), '┠');
+        assert_eq!(at(9, 3), '┫');
+        // Inside: every mix of light cell lines and heavy box lines.
+        assert_eq!(at(1, 1), '┼');
+        assert_eq!(at(3, 1), '╂');
+        assert_eq!(at(1, 3), '┿');
+        assert_eq!(at(3, 3), '╋');
+        // Every row has its own line, even inside a box.
+        assert_eq!(board_char(&lines, 1, pitch_y), '─');
+        assert_eq!(board_char(&lines, 1, 3 * pitch_y), '━');
+        assert_eq!(board_char(&lines, pitch_x, 1), '│');
+        assert_eq!(board_char(&lines, 3 * pitch_x, 1), '┃');
+    }
+
+    #[test]
     fn minimum_terminal_still_fits_board_and_controls() {
-        let game = test_game();
-        let st = RenderState {
-            game: Some(&game),
-            show_help: false,
-            show_levels: false,
-            level_cursor: 0,
-            menu_cursor: 0,
-            generating: false,
-        };
-        let (lines, hits) = draw(&st, MIN_W, MIN_H);
+        let app = app_with_game();
+        let (lines, hits) = draw(&app, MIN_W, MIN_H);
         let screen = text(&lines);
         assert!(
             !screen.contains("too small"),
             "board should fit at {MIN_W}x{MIN_H}"
         );
-        let cells = hits
-            .iter()
-            .filter(|h| matches!(h.action, ClickAction::Cell(_, _)))
-            .count();
-        assert_eq!(cells, 81);
+        assert_eq!(cell_hits(&hits), 81);
         for label in ["Notes", "Undo", "Hint", "Erase"] {
             assert!(
                 screen.contains(label),
@@ -1021,142 +1019,90 @@ mod tests {
 
     #[test]
     fn full_game_screen_has_board_and_controls() {
-        let game = test_game();
-        let st = RenderState {
-            game: Some(&game),
-            show_help: false,
-            show_levels: false,
-            level_cursor: 0,
-            menu_cursor: 0,
-            generating: false,
-        };
-        let (lines, hits) = draw(&st, 100, 50);
+        let app = app_with_game();
+        let (lines, hits) = draw(&app, W, 50);
         let screen = text(&lines);
         assert!(screen.contains("TUDOKU"), "title missing");
         assert!(screen.contains("Easy"), "difficulty missing");
         for label in ["Notes", "Undo", "Hint", "Erase", "Level", "Pause", "Help"] {
             assert!(screen.contains(label), "{label} button missing");
         }
-        // Board cells and number bar are clickable.
-        assert!(
-            hits.iter()
-                .any(|h| matches!(h.action, ClickAction::Cell(0, 0)))
-        );
-        assert!(
-            hits.iter()
-                .any(|h| matches!(h.action, ClickAction::Digit(5)))
-        );
+        // Board cells and number pad are clickable.
+        let has = |want: Action| hits.iter().any(|h| h.action == Some(want));
+        assert!(has(Action::Board(BoardAction::Select(0, 0))));
+        assert!(has(Action::Board(BoardAction::Digit(5))));
         // Every cell is hit-testable exactly once.
-        let cells = hits
-            .iter()
-            .filter(|h| matches!(h.action, ClickAction::Cell(_, _)))
-            .count();
-        assert_eq!(cells, 81);
+        assert_eq!(cell_hits(&hits), 81);
     }
 
     #[test]
     fn title_screen_lists_all_difficulties() {
-        let st = RenderState {
-            game: None,
-            show_help: false,
-            show_levels: false,
-            level_cursor: 0,
-            menu_cursor: 1,
-            generating: false,
-        };
-        let (lines, _) = draw(&st, 100, 50);
+        let app = App::new(Store::none());
+        let (lines, hits) = draw(&app, W, 50);
         let screen = text(&lines);
-        for name in ["Easy", "Medium", "Hard", "Expert", "Zen"] {
-            assert!(screen.contains(name), "{name} missing on title");
+        for d in Difficulty::ALL {
+            assert!(screen.contains(d.name()), "{d:?} missing on title");
+            assert!(hits.iter().any(|h| h.action == Some(Action::StartLevel(d))));
         }
     }
 
     #[test]
     fn small_terminal_shows_size_warning() {
-        let game = test_game();
-        let st = RenderState {
-            game: Some(&game),
-            show_help: false,
-            show_levels: false,
-            level_cursor: 0,
-            menu_cursor: 0,
-            generating: false,
-        };
-        let (lines, _) = draw(&st, 50, 20);
+        let app = app_with_game();
+        let (lines, _) = draw(&app, 50, 20);
         assert!(text(&lines).contains("too small"));
     }
 
     #[test]
     fn win_and_pause_overlays_render() {
-        let mut game = test_game();
-        game.values = game.solution;
-        game.completed = true;
-        let st = RenderState {
-            game: Some(&game),
-            show_help: false,
-            show_levels: false,
-            level_cursor: 0,
-            menu_cursor: 0,
-            generating: false,
-        };
-        let (lines, _) = draw(&st, 100, 50);
+        let mut app = app_with_game();
+        app.overlays.push(Overlay::Won);
+        let (lines, _) = draw(&app, W, 50);
         assert!(text(&lines).contains("Solved!"));
 
-        let mut game = test_game();
-        game.set_paused(true);
-        let st = RenderState {
-            game: Some(&game),
-            show_help: false,
-            show_levels: false,
-            level_cursor: 0,
-            menu_cursor: 0,
-            generating: false,
-        };
-        let (lines, _) = draw(&st, 100, 50);
+        let mut app = app_with_game();
+        app.pause();
+        let (lines, _) = draw(&app, W, 50);
         let screen = text(&lines);
         assert!(screen.contains("Paused"));
-        // Board hidden while paused: first cell interior is blank.
-        // Board origin for width 100: ox=4, row 0 at y=4..6, interior x=5..10.
-        let row: Vec<char> = lines[5].chars().collect();
-        assert!(row[5..11].iter().all(|&c| c == ' '));
+        // Board hidden while paused: the given 5 at (0,0) isn't drawn.
+        assert_eq!(cell_row(&lines, 0, 0, 1), " ".repeat(usize::from(CELL_W)));
+        let (lines, _) = draw(&app_with_game(), W, 50);
+        assert_eq!(cell_row(&lines, 0, 0, 1), "   5   ", "and is when unpaused");
     }
 
     #[test]
     fn win_popup_action_buttons_are_visible() {
-        let mut game = test_game();
-        game.values = game.solution;
-        game.completed = true;
-        let st = RenderState {
-            game: Some(&game),
-            show_help: false,
-            show_levels: false,
-            level_cursor: 0,
-            menu_cursor: 0,
-            generating: false,
-        };
-        let (lines, hits) = draw(&st, 100, 50);
+        let mut app = app_with_game();
+        app.overlays.push(Overlay::Won);
+        let (lines, hits) = draw(&app, W, 50);
         let screen = text(&lines);
         assert!(screen.contains("New"), "win popup New button text missing");
         assert!(
             screen.contains("Levels"),
             "win popup Levels button text missing"
         );
-        for want in [ClickAction::WinNew, ClickAction::WinLevels] {
+        for want in [Action::NewGame, Action::OpenLevels] {
+            // The topmost hit for this action is the popup's button.
             let hit = hits
                 .iter()
-                .find(|h| std::mem::discriminant(&h.action) == std::mem::discriminant(&want))
+                .rev()
+                .find(|h| h.action == Some(want))
                 .unwrap_or_else(|| panic!("win popup hit missing: {want:?}"));
             // A bordered button needs a content row: height >= 3.
             assert!(
                 hit.rect.height >= 3,
                 "win popup button too short to show text: {hit:?}"
             );
+            let (x, y) = (hit.rect.x + 1, hit.rect.y + 1);
+            assert_eq!(hit_at(&hits, x, y), Some(want), "button is clickable");
         }
     }
 
     #[test]
     fn notes_render_as_mini_grid() {
-        let mut game = test_game();
+        let mut app = app_with_game();
+        let game = app.game.as_mut().unwrap();
         game.toggle_notes_mode();
         // Cell (0,3) is empty in the test puzzle; pencil 1, 5 and 9.
         game.set_selected(0, 3);
@@ -1164,60 +1110,134 @@ mod tests {
         game.enter_digit(5);
         game.enter_digit(9);
         game.toggle_notes_mode();
-        let st = RenderState {
-            game: Some(&game),
-            show_help: false,
-            show_levels: false,
-            level_cursor: 0,
-            menu_cursor: 0,
-            generating: false,
-        };
-        let (lines, _) = draw(&st, 100, 50);
-        // Cell (0,3) interior starts at x=4+1+3*7=26, rows y=4..6.
-        // The 5-char mini-grid row sits left-aligned in the 6-wide cell.
-        let top: Vec<char> = lines[4].chars().collect();
-        let mid: Vec<char> = lines[5].chars().collect();
-        let bot: Vec<char> = lines[6].chars().collect();
-        assert_eq!(top[26..32].iter().collect::<String>(), "1     ");
-        assert_eq!(mid[26..32].iter().collect::<String>(), "  5   ");
-        assert_eq!(bot[26..32].iter().collect::<String>(), "    9 ");
+        let (lines, _) = draw(&app, W, 50);
+        // The mini-grid is centered, so its middle column (2, 5, 8) lines
+        // up with where a placed digit goes.
+        assert_eq!(cell_row(&lines, 0, 3, 0), " 1     ");
+        assert_eq!(cell_row(&lines, 0, 3, 1), "   5   ");
+        assert_eq!(cell_row(&lines, 0, 3, 2), "     9 ");
     }
 
     #[test]
-    fn open_popup_blocks_clicks_outside_its_own_rect() {
-        let game = test_game();
-        let st = RenderState {
-            game: Some(&game),
-            show_help: true,
-            show_levels: false,
-            level_cursor: 0,
-            menu_cursor: 0,
-            generating: false,
-        };
-        let (_, hits) = draw(&st, MIN_W, MIN_H);
-        // A board cell near the left edge, well outside the centered Help
-        // popup: must resolve to Blocked, not to the cell underneath.
-        let action = hit_at(&hits, 2, MIN_H - 2).expect("some hit under the backdrop");
-        assert!(
-            matches!(action, ClickAction::Blocked),
-            "click outside an open popup must be swallowed, got {action:?}"
-        );
+    fn every_overlay_swallows_clicks_outside_its_own_rect() {
+        for overlay in [
+            Overlay::Help,
+            Overlay::Paused,
+            Overlay::Won,
+            Overlay::Levels { cursor: 0 },
+        ] {
+            let mut app = app_with_game();
+            app.overlays.push(overlay);
+            let (_, hits) = draw(&app, MIN_W, MIN_H);
+            // A board cell near the left edge, well outside the popup: the
+            // click must close the popup, never select the cell underneath.
+            assert_eq!(
+                hit_at(&hits, 2, MIN_H - 2),
+                Some(Action::Close),
+                "{overlay:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn dealing_blocks_every_click() {
+        let mut app = app_with_game();
+        app.dealing = Some(Difficulty::Hard);
+        let (lines, hits) = draw(&app, W, 50);
+        assert!(text(&lines).contains("Dealing"));
+        for (x, y) in [(2, 48), (10, 8), (50, 25)] {
+            assert_eq!(hit_at(&hits, x, y), None);
+        }
     }
 
     #[test]
     fn help_popup_lists_controls() {
-        let game = test_game();
-        let st = RenderState {
-            game: Some(&game),
-            show_help: true,
-            show_levels: false,
-            level_cursor: 0,
-            menu_cursor: 0,
-            generating: false,
-        };
-        let (lines, _) = draw(&st, 100, 50);
+        let mut app = app_with_game();
+        app.overlays.push(Overlay::Help);
+        let (lines, _) = draw(&app, W, 50);
         let screen = text(&lines);
         assert!(screen.contains("How to play"));
         assert!(screen.contains("Hint"));
+    }
+
+    #[test]
+    fn time_formats_with_hours_when_needed() {
+        assert_eq!(format_time(Duration::from_secs(75)), "01:15");
+        assert_eq!(format_time(Duration::from_secs(3600 + 62)), "1:01:02");
+    }
+
+    #[test]
+    fn messages_show_on_a_finished_board_too() {
+        let mut app = app_with_game();
+        let game = app.game.as_mut().unwrap();
+        game.values = game.solution;
+        game.completed = true;
+        game.say("Couldn't save stats: disk full");
+        let (lines, _) = draw(&app, W, 50);
+        assert!(text(&lines).contains("Couldn't save stats: disk full"));
+    }
+
+    #[test]
+    fn long_messages_are_clipped_visibly_at_minimum_width() {
+        let mut app = app_with_game();
+        let msg = "Couldn't save: Read-only file system (os error 30), and more";
+        app.game.as_mut().unwrap().say(msg);
+        let (lines, _) = draw(&app, MIN_W, MIN_H);
+        let header = text(&lines[..2]);
+        assert!(header.contains("Couldn't save: Read-only"), "{header}");
+        assert!(header.contains('…'), "a clipped message says so: {header}");
+    }
+
+    #[test]
+    fn dealing_names_every_level_in_full() {
+        for level in Difficulty::ALL {
+            let mut app = app_with_game();
+            app.dealing = Some(level);
+            let (lines, _) = draw(&app, MIN_W, MIN_H);
+            let want = format!("fresh {} puzzle", level.name());
+            assert!(text(&lines).contains(&want), "{level:?}");
+        }
+    }
+
+    #[test]
+    fn menus_fit_best_times_over_an_hour() {
+        let mut app = App::new(Store::none());
+        app.stats
+            .record(Difficulty::Zen, Duration::from_secs(10 * 3600 + 59), 0);
+        let (lines, _) = draw(&app, MIN_W, MIN_H);
+        assert!(text(&lines).contains("best 10:00:59"));
+    }
+
+    #[test]
+    fn number_pad_lines_up_with_the_buttons() {
+        assert_eq!(DIGIT_GRID_W, BTN_GRID_W);
+    }
+
+    #[test]
+    fn only_the_top_popup_is_drawn() {
+        let mut app = app_with_game();
+        app.overlays.push(Overlay::Won);
+        app.overlays.push(Overlay::Levels { cursor: 0 });
+        let screen = text(&draw(&app, MIN_W, MIN_H).0);
+        assert!(screen.contains("pick difficulty"));
+        assert!(
+            !screen.contains("Solved!"),
+            "the win popup waits underneath"
+        );
+
+        let mut title = App::new(Store::none());
+        title.overlays.push(Overlay::Help);
+        let screen = text(&draw(&title, MIN_W, MIN_H).0);
+        assert!(screen.contains("How to play"));
+        assert!(!screen.contains("pick difficulty"), "no menu peeking out");
+    }
+
+    #[test]
+    fn tall_terminals_center_the_board_under_popups() {
+        let area = Rect::new(0, 0, W, 90);
+        let (_, oy) = board_origin(area);
+        assert_eq!(oy, (90 - (MIN_H + 1)) / 2 + 3);
+        let popup = centered_rect(area, 48, 13);
+        assert!(popup.y > oy && popup.bottom() < oy + BOARD_H, "{popup:?}");
     }
 }
