@@ -47,9 +47,9 @@ pub const BOARD_H: u16 = 9 * (CELL_H + 1) + 1; // 37
 // it, since terminals are almost always much wider than they are tall — that
 // keeps the required height pinned to the board's own height instead of
 // stacking on top of it.
-const DIGIT_W: u16 = 6;
-const DIGIT_GAP: u16 = 1;
-const DIGIT_GRID_W: u16 = 3 * DIGIT_W + 2 * DIGIT_GAP; // 20
+const DIGIT_W: u16 = 7;
+const DIGIT_GAP: u16 = 2;
+const DIGIT_GRID_W: u16 = 3 * DIGIT_W + 2 * DIGIT_GAP; // 25, as wide as the buttons
 const DIGIT_GRID_H: u16 = 3 * CELL_H; // 9
 const BTN_W: u16 = 12;
 const BTN_GAP: u16 = 1;
@@ -108,7 +108,16 @@ fn centered_rect(area: Rect, w: u16, h: u16) -> Rect {
 /// Top-left of the board for a screen `area`: the board and side panel
 /// are centered together, under the header and divider.
 fn board_origin(area: Rect) -> (u16, u16) {
-    (area.x + area.width.saturating_sub(BLOCK_W) / 2, area.y + 3)
+    (
+        area.x + area.width.saturating_sub(BLOCK_W) / 2,
+        layout_top(area) + 3,
+    )
+}
+
+/// First row of the game layout (header, board, footer), centered
+/// vertically so popups, which center on the screen, sit over the board.
+fn layout_top(area: Rect) -> u16 {
+    area.y + area.height.saturating_sub(MIN_H + 1) / 2
 }
 
 /// Top-left of a cell's interior.
@@ -324,7 +333,18 @@ fn best_label(best: Option<Duration>) -> String {
     )
 }
 
-fn header_lines(game: &Game, best: Option<Duration>) -> (Line<'static>, Line<'static>) {
+/// `text` cut to `width` columns, ending in "…" when it had to be cut.
+fn fit(text: &str, width: usize) -> String {
+    if Line::raw(text).width() <= width {
+        return text.to_string();
+    }
+    let mut out: String = text.chars().take(width.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+/// The two header lines for a header `width` columns wide.
+fn header_lines(game: &Game, best: Option<Duration>, width: u16) -> (Line<'static>, Line<'static>) {
     let diff = game.difficulty;
     let (done, total) = game.progress();
     let bar_w = 14;
@@ -349,8 +369,8 @@ fn header_lines(game: &Game, best: Option<Duration>) -> (Line<'static>, Line<'st
         ),
         Span::styled(best_label(best), Style::default().fg(AMBER)),
     ]);
-    if game.completed {
-        let bottom = Line::from(vec![
+    let mut bottom = if game.completed {
+        Line::from(vec![
             Span::styled(
                 format!("✓ Solved in {}   ", format_time(game.elapsed())),
                 Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
@@ -360,14 +380,24 @@ fn header_lines(game: &Game, best: Option<Duration>) -> (Line<'static>, Line<'st
                 Style::default().fg(DIM),
             ),
             Span::styled("N new puzzle · d change level", Style::default().fg(INK)),
-        ]);
-        return (top, bottom);
+        ])
+    } else {
+        stats_line(game, done, total, &bar)
+    };
+    // Transient messages go last, clipped visibly rather than mid-word.
+    if let Some(msg) = game.message(Duration::from_secs(4)) {
+        let room = usize::from(width).saturating_sub(bottom.width() + 3);
+        bottom.push_span(Span::styled(
+            format!("   {}", fit(msg, room)),
+            Style::default().fg(AMBER),
+        ));
     }
-    let status_msg = game
-        .message(std::time::Duration::from_secs(4))
-        .unwrap_or("")
-        .to_string();
-    let bottom = Line::from(vec![
+    (top, bottom)
+}
+
+/// Clock, mistakes, hints, progress and notes mode for a game in play.
+fn stats_line(game: &Game, done: usize, total: usize, bar: &str) -> Line<'static> {
+    Line::from(vec![
         Span::styled(
             format!("⏱ {}  ", format_time(game.elapsed())),
             Style::default().fg(INK),
@@ -391,9 +421,7 @@ fn header_lines(game: &Game, best: Option<Duration>) -> (Line<'static>, Line<'st
                 .fg(if game.notes_mode { AMBER } else { DIM })
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(format!("   {status_msg}"), Style::default().fg(AMBER)),
-    ]);
-    (top, bottom)
+    ])
 }
 
 fn popup_block(title: &str) -> Block<'static> {
@@ -420,7 +448,7 @@ fn popup(frame: &mut Frame, area: Rect, w: u16, h: u16, title: &str) -> (Rect, R
 }
 
 /// Text width of one level-menu row.
-const MENU_TEXT_W: usize = 58;
+const MENU_TEXT_W: usize = 60;
 
 /// A menu of levels (and, on the title screen, "Continue"), with best
 /// times. Returns the popup's frame; each row registers its own click.
@@ -464,7 +492,7 @@ fn draw_levels_menu(
             MenuRow::Level(d) => {
                 let best = best_label(app.stats.level(d).best());
                 let text = format!(
-                    " {marker} {}. {:<6}  {:<31}  {best:>10}",
+                    " {marker} {}. {:<6}  {:<31}  {best:>12}",
                     d.index() + 1,
                     d.name(),
                     d.blurb(),
@@ -619,7 +647,7 @@ fn draw_dealing(frame: &mut Frame, area: Rect, level: Difficulty) {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() / 80);
     let spin = SPINNER[(tick % SPINNER.len() as u128) as usize];
-    let (_, inner) = popup(frame, area, 36, 6, "Dealing");
+    let (_, inner) = popup(frame, area, 40, 6, "Dealing");
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(""),
@@ -689,10 +717,14 @@ fn draw_title(frame: &mut Frame, area: Rect, app: &App, hits: &mut Vec<Hit>) {
         Line::from(""),
         Line::styled(prompt, Style::default().fg(INK)),
     ];
-    let footer = " Enter start   ? help   q quit";
-    let menu = draw_levels_menu(frame, area, app, &rows, app.menu_cursor, footer, hits);
+    let menu = centered_rect(area, MENU_TEXT_W as u16 + 4, rows.len() as u16 + 6);
     let tr = Rect::new(area.x, menu.y.saturating_sub(6), area.width, 5);
     frame.render_widget(Paragraph::new(title).alignment(Alignment::Center), tr);
+    // Under a popup (help) the menu would only peek out around it.
+    if app.overlays.is_empty() {
+        let footer = " Enter start   ? help   q quit";
+        draw_levels_menu(frame, area, app, &rows, app.menu_cursor, footer, hits);
+    }
 }
 
 fn draw_panel(frame: &mut Frame, game: &Game, x: u16, y: u16, hits: &mut Vec<Hit>) {
@@ -809,13 +841,14 @@ fn draw_game(frame: &mut Frame, area: Rect, app: &App, game: &Game, hits: &mut V
     // panel underneath it, since terminals are almost always much wider
     // than they are tall. The header lines up with the board's left edge.
     let (ox, oy) = board_origin(area);
-    let header = Rect::new(ox, area.y, area.right() - ox, 2);
+    let top_y = layout_top(area);
+    let header = Rect::new(ox, top_y, area.right() - ox, 2);
     let best = app.stats.level(game.difficulty).best();
-    let (top, bottom) = header_lines(game, best);
+    let (top, bottom) = header_lines(game, best, header.width);
     frame.render_widget(Paragraph::new(vec![top, bottom]), header);
     frame.render_widget(
         Paragraph::new("─".repeat(usize::from(BLOCK_W))).style(Style::default().fg(GRID_THIN)),
-        Rect::new(ox, area.y + 2, BLOCK_W, 1),
+        Rect::new(ox, top_y + 2, BLOCK_W, 1),
     );
 
     draw_board(frame, game, ox, oy, hits);
@@ -855,7 +888,9 @@ pub fn render(frame: &mut Frame, app: &App) -> Vec<Hit> {
         None => draw_title(frame, area, app, &mut hits),
         Some(game) => draw_game(frame, area, app, game, &mut hits),
     }
-    for &overlay in &app.overlays {
+    // Only the top popup is drawn: nothing under it can be used anyway,
+    // and half-covered frames would peek out around it.
+    if let Some(overlay) = app.top() {
         draw_overlay(frame, area, app, overlay, &mut hits);
     }
     if let Some(level) = app.dealing {
@@ -1127,8 +1162,82 @@ mod tests {
 
     #[test]
     fn time_formats_with_hours_when_needed() {
-        use std::time::Duration;
         assert_eq!(format_time(Duration::from_secs(75)), "01:15");
         assert_eq!(format_time(Duration::from_secs(3600 + 62)), "1:01:02");
+    }
+
+    #[test]
+    fn messages_show_on_a_finished_board_too() {
+        let mut app = app_with_game();
+        let game = app.game.as_mut().unwrap();
+        game.values = game.solution;
+        game.completed = true;
+        game.say("Couldn't save stats: disk full");
+        let (lines, _) = draw(&app, W, 50);
+        assert!(text(&lines).contains("Couldn't save stats: disk full"));
+    }
+
+    #[test]
+    fn long_messages_are_clipped_visibly_at_minimum_width() {
+        let mut app = app_with_game();
+        let msg = "Couldn't save: Read-only file system (os error 30), and more";
+        app.game.as_mut().unwrap().say(msg);
+        let (lines, _) = draw(&app, MIN_W, MIN_H);
+        let header = text(&lines[..2]);
+        assert!(header.contains("Couldn't save: Read-only"), "{header}");
+        assert!(header.contains('…'), "a clipped message says so: {header}");
+    }
+
+    #[test]
+    fn dealing_names_every_level_in_full() {
+        for level in Difficulty::ALL {
+            let mut app = app_with_game();
+            app.dealing = Some(level);
+            let (lines, _) = draw(&app, MIN_W, MIN_H);
+            let want = format!("fresh {} puzzle", level.name());
+            assert!(text(&lines).contains(&want), "{level:?}");
+        }
+    }
+
+    #[test]
+    fn menus_fit_best_times_over_an_hour() {
+        let mut app = App::new(Store::none());
+        app.stats
+            .record(Difficulty::Zen, Duration::from_secs(10 * 3600 + 59), 0);
+        let (lines, _) = draw(&app, MIN_W, MIN_H);
+        assert!(text(&lines).contains("best 10:00:59"));
+    }
+
+    #[test]
+    fn number_pad_lines_up_with_the_buttons() {
+        assert_eq!(DIGIT_GRID_W, BTN_GRID_W);
+    }
+
+    #[test]
+    fn only_the_top_popup_is_drawn() {
+        let mut app = app_with_game();
+        app.overlays.push(Overlay::Won);
+        app.overlays.push(Overlay::Levels { cursor: 0 });
+        let screen = text(&draw(&app, MIN_W, MIN_H).0);
+        assert!(screen.contains("pick difficulty"));
+        assert!(
+            !screen.contains("Solved!"),
+            "the win popup waits underneath"
+        );
+
+        let mut title = App::new(Store::none());
+        title.overlays.push(Overlay::Help);
+        let screen = text(&draw(&title, MIN_W, MIN_H).0);
+        assert!(screen.contains("How to play"));
+        assert!(!screen.contains("pick difficulty"), "no menu peeking out");
+    }
+
+    #[test]
+    fn tall_terminals_center_the_board_under_popups() {
+        let area = Rect::new(0, 0, W, 90);
+        let (_, oy) = board_origin(area);
+        assert_eq!(oy, (90 - (MIN_H + 1)) / 2 + 3);
+        let popup = centered_rect(area, 48, 13);
+        assert!(popup.y > oy && popup.bottom() < oy + BOARD_H, "{popup:?}");
     }
 }
