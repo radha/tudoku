@@ -9,10 +9,16 @@
 //! Keys and clicks both become an [`Action`], and [`App::apply`] is the one
 //! place that decides what an action does.
 
+use std::time::{Duration, Instant};
+
 use crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::deal::Difficulty;
 use crate::game::Game;
+use crate::store::{Stats, Store};
+
+/// How often a running game is saved even without edits.
+const AUTOSAVE_EVERY: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Overlay {
@@ -47,9 +53,11 @@ pub enum Action {
     /// New puzzle at the current difficulty.
     NewGame,
     StartLevel(Difficulty),
+    /// Pick the saved game back up.
+    Continue,
     CursorUp,
     CursorDown,
-    /// Enter on a menu: start the highlighted level.
+    /// Enter on a menu: take the highlighted row.
     Confirm,
     OpenLevels,
     OpenHelp,
@@ -58,14 +66,28 @@ pub enum Action {
     Close,
 }
 
+/// A row of the title-screen menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuRow {
+    Continue,
+    Level(Difficulty),
+}
+
 pub struct App {
     pub game: Option<Game>,
     pub overlays: Vec<Overlay>,
-    /// Highlighted row of the title-screen menu.
+    /// Highlighted row of the title-screen menu (see [`App::menu_rows`]).
     pub menu_cursor: usize,
     pub last_level: Difficulty,
     /// A puzzle at this level is being dealt.
     pub dealing: Option<Difficulty>,
+    /// A saved game, offered as "Continue" on the title screen.
+    pub resume: Option<Game>,
+    pub stats: Stats,
+    /// The last solve set a new best time.
+    pub new_best: bool,
+    store: Store,
+    last_saved: Instant,
 }
 
 /// The level bound to a number key on the level menus (`1` = Easy).
@@ -76,14 +98,40 @@ fn level_for_key(c: char) -> Option<Action> {
 }
 
 impl App {
-    pub fn new() -> Self {
-        Self {
+    /// Start on the title screen, offering any saved game from `store`.
+    pub fn new(store: Store) -> Self {
+        let resume = store.load_game();
+        let last_level = resume.as_ref().map_or(Difficulty::Medium, |g| g.difficulty);
+        let mut app = Self {
             game: None,
             overlays: Vec::new(),
-            menu_cursor: Difficulty::Medium.index(),
-            last_level: Difficulty::Medium,
+            menu_cursor: 0,
+            last_level,
             dealing: None,
+            resume,
+            stats: store.load_stats(),
+            new_best: false,
+            store,
+            last_saved: Instant::now(),
+        };
+        if app.resume.is_none() {
+            app.menu_cursor = app.menu_row_of(last_level);
         }
+        app
+    }
+
+    /// The title menu: "Continue" first when there's a saved game.
+    pub fn menu_rows(&self) -> Vec<MenuRow> {
+        let levels = Difficulty::ALL.map(MenuRow::Level);
+        self.resume
+            .iter()
+            .map(|_| MenuRow::Continue)
+            .chain(levels)
+            .collect()
+    }
+
+    fn menu_row_of(&self, level: Difficulty) -> usize {
+        usize::from(self.resume.is_some()) + level.index()
     }
 
     pub fn top(&self) -> Option<Overlay> {
@@ -149,6 +197,7 @@ impl App {
                 Down | Char('j') => Some(Action::CursorDown),
                 Enter | Char(' ') => Some(Action::Confirm),
                 Char('?') | F(1) => Some(Action::OpenHelp),
+                Char('c') if self.resume.is_some() => Some(Action::Continue),
                 Char(c) => level_for_key(c),
                 _ => None,
             };
@@ -184,13 +233,10 @@ impl App {
             Action::Board(b) => self.play(b),
             Action::NewGame => self.request_new_game(self.last_level),
             Action::StartLevel(level) => self.request_new_game(level),
+            Action::Continue => self.continue_saved(),
             Action::CursorUp => self.move_cursor(-1),
             Action::CursorDown => self.move_cursor(1),
-            Action::Confirm => {
-                if let Some(cursor) = self.cursor() {
-                    self.request_new_game(Difficulty::ALL[cursor]);
-                }
-            }
+            Action::Confirm => self.confirm(),
             Action::OpenLevels => self.overlays.push(Overlay::Levels {
                 cursor: self.last_level.index(),
             }),
@@ -201,23 +247,75 @@ impl App {
         false
     }
 
-    /// The highlighted row of whichever level menu has focus.
-    fn cursor(&self) -> Option<usize> {
+    fn confirm(&mut self) {
         match self.top() {
-            Some(Overlay::Levels { cursor }) => Some(cursor),
-            None if self.game.is_none() => Some(self.menu_cursor),
-            _ => None,
+            Some(Overlay::Levels { cursor }) => self.request_new_game(Difficulty::ALL[cursor]),
+            None if self.game.is_none() => match self.menu_rows()[self.menu_cursor] {
+                MenuRow::Continue => self.continue_saved(),
+                MenuRow::Level(level) => self.request_new_game(level),
+            },
+            _ => {}
         }
     }
 
     fn move_cursor(&mut self, delta: isize) {
-        let cursor = match self.overlays.last_mut() {
-            Some(Overlay::Levels { cursor }) => cursor,
-            None if self.game.is_none() => &mut self.menu_cursor,
+        let rows = self.menu_rows().len();
+        let (cursor, n) = match self.overlays.last_mut() {
+            Some(Overlay::Levels { cursor }) => (cursor, Difficulty::ALL.len()),
+            None if self.game.is_none() => (&mut self.menu_cursor, rows),
             _ => return,
         };
-        let n = Difficulty::ALL.len() as isize;
-        *cursor = (*cursor as isize + delta).rem_euclid(n) as usize;
+        *cursor = (*cursor as isize + delta).rem_euclid(n as isize) as usize;
+    }
+
+    fn continue_saved(&mut self) {
+        if let Some(mut game) = self.resume.take() {
+            // Restored games wait with the clock stopped; it runs again now.
+            game.set_paused(false);
+            self.last_level = game.difficulty;
+            self.start_game(game);
+        }
+    }
+
+    /// Save the game in progress, so quitting (or a crash, or a closed
+    /// window) loses nothing. Finished games aren't kept.
+    pub fn save(&mut self) {
+        self.last_saved = Instant::now();
+        let Some(game) = &mut self.game else { return };
+        if game.completed {
+            return;
+        }
+        if let Err(e) = self.store.save_game(game) {
+            game.say(&format!("Couldn't save: {e}"));
+        }
+    }
+
+    /// Every edit saves at once; this also keeps the clock and selection
+    /// fresh on disk while the player is just thinking.
+    pub fn autosave(&mut self) {
+        let running = self
+            .game
+            .as_ref()
+            .is_some_and(|g| !g.paused && !g.completed);
+        if running && self.last_saved.elapsed() >= AUTOSAVE_EVERY {
+            self.save();
+        }
+    }
+
+    /// Record a solve and forget the save.
+    fn finish(&mut self) {
+        let Some(game) = &mut self.game else { return };
+        self.new_best = self
+            .stats
+            .record(game.difficulty, game.elapsed(), game.hints_used);
+        let saved = self
+            .store
+            .save_stats(&self.stats)
+            .and_then(|()| self.store.clear_game());
+        if let Err(e) = saved {
+            game.say(&format!("Couldn't save stats: {e}"));
+        }
+        self.overlays.push(Overlay::Won);
     }
 
     fn close_top(&mut self) {
@@ -236,6 +334,7 @@ impl App {
         }
         g.set_paused(true);
         self.overlays.push(Overlay::Paused);
+        self.save();
     }
 
     fn play(&mut self, action: BoardAction) {
@@ -254,34 +353,39 @@ impl App {
             BoardAction::Hint => g.hint(),
         }
         if g.completed && !was_done {
-            self.overlays.push(Overlay::Won);
+            self.finish();
+        } else if !matches!(action, BoardAction::Move(..) | BoardAction::Select(..)) {
+            self.save();
         }
     }
 
     fn request_new_game(&mut self, level: Difficulty) {
         self.last_level = level;
-        self.menu_cursor = level.index();
         self.dealing = Some(level);
         self.overlays.clear();
     }
 
-    /// Swap in a freshly dealt puzzle.
+    /// Swap in a new or resumed game (replacing any older save).
     pub fn start_game(&mut self, game: Game) {
         self.game = Some(game);
+        self.resume = None;
         self.dealing = None;
+        self.new_best = false;
         self.overlays.clear();
+        self.save();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::Store;
     use crate::sudoku::{CELLS, col_of, row_of, test_board};
     use crate::ui::{self, hit_at};
     use ratatui::{Terminal, backend::TestBackend};
 
     fn app_with_game(level: Difficulty) -> App {
-        let mut app = App::new();
+        let mut app = App::new(Store::none());
         let (p, s) = test_board();
         app.start_game(Game::new(level, p, s));
         app.last_level = level;
@@ -440,7 +544,7 @@ mod tests {
 
     #[test]
     fn help_on_the_title_screen_captures_keys() {
-        let mut app = App::new();
+        let mut app = App::new(Store::none());
         key(&mut app, KeyCode::Char('?'));
         let before = app.menu_cursor;
         key(&mut app, KeyCode::Down);
@@ -475,11 +579,11 @@ mod tests {
 
     #[test]
     fn number_keys_and_enter_start_levels() {
-        let mut app = App::new();
+        let mut app = App::new(Store::none());
         key(&mut app, KeyCode::Char('4'));
         assert_eq!(app.dealing, Some(Difficulty::Expert));
 
-        let mut app = App::new();
+        let mut app = App::new(Store::none());
         key(&mut app, KeyCode::Up);
         key(&mut app, KeyCode::Enter);
         assert_eq!(app.dealing, Some(Difficulty::Easy));
@@ -496,5 +600,109 @@ mod tests {
         assert_eq!(app.game.as_ref().unwrap().values, before);
         assert!(app.overlays.is_empty());
         assert!(key(&mut app, KeyCode::Char('q')));
+    }
+
+    /// An app backed by a real (temporary) save directory.
+    fn app_on_disk(dir: &tempfile::TempDir) -> App {
+        App::new(Store::at(dir.path()))
+    }
+
+    #[test]
+    fn quitting_mid_game_offers_continue_next_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_on_disk(&dir);
+        assert_eq!(app.menu_rows()[0], MenuRow::Level(Difficulty::Easy));
+        let (p, s) = test_board();
+        app.start_game(Game::new(Difficulty::Hard, p, s));
+        key(&mut app, KeyCode::Char('9')); // a (wrong) entry at (0,2)
+        key(&mut app, KeyCode::Right);
+        app.save(); // what quitting does
+        let before = app.game.as_ref().unwrap().values;
+
+        let mut app = app_on_disk(&dir);
+        assert!(app.game.is_none(), "starts on the title screen");
+        assert_eq!(app.menu_rows()[0], MenuRow::Continue);
+        assert_eq!(app.menu_cursor, 0, "Continue is preselected");
+        assert_eq!(app.last_level, Difficulty::Hard);
+        key(&mut app, KeyCode::Enter);
+        let g = app.game.as_ref().expect("resumed");
+        assert_eq!(g.values, before);
+        assert_eq!(g.selected, (0, 3));
+        assert_eq!(g.mistakes, 1);
+        assert!(app.resume.is_none());
+    }
+
+    #[test]
+    fn c_continues_and_number_keys_start_fresh_instead() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_on_disk(&dir);
+        let (p, s) = test_board();
+        app.start_game(Game::new(Difficulty::Expert, p, s));
+
+        let mut app = app_on_disk(&dir);
+        key(&mut app, KeyCode::Char('c'));
+        assert_eq!(app.game.as_ref().unwrap().difficulty, Difficulty::Expert);
+
+        let mut app = app_on_disk(&dir);
+        key(&mut app, KeyCode::Down);
+        assert_eq!(
+            app.menu_rows()[app.menu_cursor],
+            MenuRow::Level(Difficulty::Easy)
+        );
+        key(&mut app, KeyCode::Char('2'));
+        assert_eq!(app.dealing, Some(Difficulty::Medium));
+    }
+
+    #[test]
+    fn solving_records_a_best_time_and_drops_the_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_on_disk(&dir);
+        let (p, s) = test_board();
+        app.start_game(Game::new(Difficulty::Easy, p, s));
+        solve(&mut app);
+        assert!(app.new_best);
+        let easy = app.stats.level(Difficulty::Easy);
+        assert_eq!(easy.solved, 1);
+        assert!(easy.best().is_some());
+
+        let app = app_on_disk(&dir);
+        assert!(app.resume.is_none(), "a solved puzzle isn't offered again");
+        assert_eq!(app.stats.level(Difficulty::Easy).solved, 1, "stats persist");
+    }
+
+    #[test]
+    fn autosave_catches_up_on_moves_while_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_on_disk(&dir);
+        let (p, s) = test_board();
+        app.start_game(Game::new(Difficulty::Easy, p, s));
+        key(&mut app, KeyCode::Down); // moves aren't saved on their own
+        app.autosave();
+        let stored = || Store::at(dir.path()).load_game().unwrap().selected;
+        assert_eq!(stored(), (0, 2), "too soon to autosave");
+
+        let long_ago = Instant::now().checked_sub(AUTOSAVE_EVERY * 2).unwrap();
+        app.last_saved = long_ago;
+        app.autosave();
+        assert_eq!(stored(), (1, 2));
+
+        key(&mut app, KeyCode::Char('p'));
+        key(&mut app, KeyCode::Char('?')); // help over the pause screen
+        app.last_saved = long_ago;
+        app.autosave();
+        assert_eq!(app.last_saved, long_ago, "a paused game doesn't change");
+    }
+
+    #[test]
+    fn a_hinted_solve_counts_but_sets_no_best_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_on_disk(&dir);
+        let (p, s) = test_board();
+        app.start_game(Game::new(Difficulty::Easy, p, s));
+        key(&mut app, KeyCode::Char('H'));
+        solve(&mut app);
+        assert!(!app.new_best);
+        let easy = app.stats.level(Difficulty::Easy);
+        assert_eq!((easy.solved, easy.best()), (1, None));
     }
 }

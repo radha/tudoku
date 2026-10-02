@@ -8,10 +8,11 @@ mod app;
 mod deal;
 mod game;
 mod logic;
+mod store;
 mod sudoku;
 mod ui;
 
-use std::io;
+use std::io::{self, Stdout};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -31,6 +32,7 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 use crate::app::App;
 use crate::deal::{Deal, Difficulty};
 use crate::game::Game;
+use crate::store::Store;
 
 /// Raw mode, alternate screen and mouse capture for as long as it lives.
 /// Dropping it restores the terminal, so an early `?` return can't leave
@@ -76,12 +78,31 @@ fn run() -> io::Result<()> {
     install_panic_hook();
     let _guard = TerminalGuard::enter()?;
     let mut term = Terminal::new(CrosstermBackend::new(io::stdout()))?;
-    let mut app = App::new();
+    let mut app = App::new(Store::open_default());
+    // Whether the loop ends with q or a vanished terminal, keep the game.
+    // (Closing the window kills us outright with SIGHUP; autosave covers
+    // that, so a closed window costs at most a few seconds of clock.)
+    let result = event_loop(&mut term, &mut app);
+    app.save();
+    result
+}
+
+/// `Ok(None)` for a call a signal interrupted: just go round again.
+fn retry_interrupted<T>(r: io::Result<T>) -> io::Result<Option<T>> {
+    match r {
+        Ok(v) => Ok(Some(v)),
+        Err(e) if e.kind() == io::ErrorKind::Interrupted => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+fn event_loop(term: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> io::Result<()> {
     let mut hits = Vec::new();
     // A puzzle being dealt on background threads (fully offline).
     let mut dealer: Option<mpsc::Receiver<Deal>> = None;
 
     loop {
+        app.autosave();
         if let Some(level) = app.dealing {
             match &dealer {
                 None => {
@@ -101,14 +122,17 @@ fn run() -> io::Result<()> {
             }
         }
 
-        term.draw(|f| hits = ui::render(f, &app))?;
+        term.draw(|f| hits = ui::render(f, app))?;
 
         // Poll so the timer (or the dealing spinner) refreshes on its own.
         let tick = if app.dealing.is_some() { 50 } else { 250 };
-        if !event::poll(Duration::from_millis(tick))? {
+        if retry_interrupted(event::poll(Duration::from_millis(tick)))? != Some(true) {
             continue;
         }
-        let action = match event::read()? {
+        let Some(event) = retry_interrupted(event::read())? else {
+            continue;
+        };
+        let action = match event {
             Event::Key(key) if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) => {
                 app.key_action(key.code, key.modifiers)
             }

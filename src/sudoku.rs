@@ -219,7 +219,6 @@ pub fn dig<R: Rng>(solved: &Board, target: usize, rng: &mut R) -> Board {
 }
 
 /// Parse an 81-character string of digits (`0` or `.` for empty).
-#[cfg(test)]
 pub fn parse_board(s: &str) -> Option<Board> {
     let mut b = [0u8; CELLS];
     let mut n = 0;
@@ -232,6 +231,11 @@ pub fn parse_board(s: &str) -> Option<Board> {
         n += 1;
     }
     (n == CELLS).then_some(b)
+}
+
+/// The inverse of [`parse_board`], using `0` for empty cells.
+pub fn format_board(b: &Board) -> String {
+    b.iter().map(|&v| char::from(b'0' + v)).collect()
 }
 
 /// True when `b` is a complete grid that obeys every Sudoku rule.
@@ -319,6 +323,8 @@ mod tests {
         let (p, s) = test_board();
         assert_eq!(p[0], 5);
         assert_eq!(p[2], 0);
+        assert_eq!(parse_board(&format_board(&p)), Some(p));
+        assert_eq!(parse_board(&format_board(&s)), Some(s));
         assert_eq!(parse_board("123"), None);
         assert_eq!(parse_board(&"1".repeat(82)), None);
         assert_eq!(parse_board(&"x".repeat(81)), None);

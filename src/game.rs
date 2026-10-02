@@ -2,12 +2,17 @@
 
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
+
 use crate::deal::Difficulty;
 use crate::logic::{self, Technique};
-use crate::sudoku::{Board, CELLS, col_of, idx, peers, row_of};
+use crate::sudoku::{
+    ALL_DIGITS, Board, CELLS, col_of, format_board, idx, is_unique, parse_board, peers, row_of,
+    solve_one,
+};
 
 /// Snapshot of one cell (plus auto-removed peer notes) for undo.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct UndoEntry {
     cell: usize,
     prev_value: u8,
@@ -15,6 +20,42 @@ struct UndoEntry {
     prev_hinted: bool,
     peer_notes: Vec<(usize, u16)>,
 }
+
+impl UndoEntry {
+    /// Could this entry have come from playing `puzzle`?
+    fn fits(&self, puzzle: &Board) -> bool {
+        let notes_ok = |m: u16| m & !ALL_DIGITS == 0;
+        self.cell < CELLS
+            && puzzle[self.cell] == 0
+            && self.prev_value <= 9
+            && notes_ok(self.prev_notes)
+            && self
+                .peer_notes
+                .iter()
+                .all(|&(p, m)| p < CELLS && puzzle[p] == 0 && notes_ok(m))
+    }
+}
+
+/// Everything needed to resume a game, in a stable on-disk shape. Boards
+/// are 81-digit strings so a save file stays readable.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SavedGame {
+    version: u32,
+    difficulty: Difficulty,
+    puzzle: String,
+    solution: String,
+    values: String,
+    notes: Vec<u16>,
+    hinted: Vec<usize>,
+    selected: (usize, usize),
+    notes_mode: bool,
+    mistakes: u32,
+    hints_used: u32,
+    elapsed_ms: u64,
+    undo: Vec<UndoEntry>,
+}
+
+const SAVE_VERSION: u32 = 1;
 
 pub struct Game {
     pub difficulty: Difficulty,
@@ -296,7 +337,8 @@ impl Game {
         (done, CELLS)
     }
 
-    fn say(&mut self, msg: &str) {
+    /// Show a transient message in the header.
+    pub fn say(&mut self, msg: &str) {
         self.status = Some((msg.to_string(), Instant::now()));
     }
 
@@ -306,6 +348,68 @@ impl Game {
             .as_ref()
             .filter(|(_, t)| t.elapsed() < ttl)
             .map(|(m, _)| m.as_str())
+    }
+
+    pub fn snapshot(&self) -> SavedGame {
+        let puzzle: Board = std::array::from_fn(|i| if self.given[i] { self.values[i] } else { 0 });
+        SavedGame {
+            version: SAVE_VERSION,
+            difficulty: self.difficulty,
+            puzzle: format_board(&puzzle),
+            solution: format_board(&self.solution),
+            values: format_board(&self.values),
+            notes: self.notes.to_vec(),
+            hinted: (0..CELLS).filter(|&i| self.hinted[i]).collect(),
+            selected: self.selected,
+            notes_mode: self.notes_mode,
+            mistakes: self.mistakes,
+            hints_used: self.hints_used,
+            elapsed_ms: u64::try_from(self.elapsed().as_millis()).unwrap_or(u64::MAX),
+            undo: self.undo.clone(),
+        }
+    }
+
+    /// Rebuild a game from a save, refusing anything that isn't a
+    /// consistent, unfinished, uniquely solvable puzzle.
+    pub fn restore(s: SavedGame) -> Result<Game, String> {
+        if s.version != SAVE_VERSION {
+            return Err(format!("unknown save version {}", s.version));
+        }
+        let board = |name: &str, text: &str| {
+            parse_board(text).ok_or_else(|| format!("unreadable {name} board"))
+        };
+        let puzzle = board("puzzle", &s.puzzle)?;
+        let solution = board("solution", &s.solution)?;
+        let values = board("values", &s.values)?;
+        let consistent = is_unique(&puzzle)
+            && solve_one(&puzzle) == Some(solution)
+            && (0..CELLS).all(|i| puzzle[i] == 0 || values[i] == puzzle[i])
+            && values != solution
+            && s.notes.len() == CELLS
+            && s.notes.iter().all(|&m| m & !ALL_DIGITS == 0)
+            && s.hinted
+                .iter()
+                .all(|&i| i < CELLS && puzzle[i] == 0 && values[i] == solution[i])
+            && s.selected.0 < 9
+            && s.selected.1 < 9
+            && s.undo.iter().all(|e| e.fits(&puzzle));
+        if !consistent {
+            return Err("inconsistent save".to_string());
+        }
+        let mut game = Game::new(s.difficulty, puzzle, solution);
+        game.values = values;
+        game.notes.copy_from_slice(&s.notes);
+        for i in s.hinted {
+            game.hinted[i] = true;
+        }
+        game.selected = s.selected;
+        game.notes_mode = s.notes_mode;
+        game.mistakes = s.mistakes;
+        game.hints_used = s.hints_used;
+        game.banked = Duration::from_millis(s.elapsed_ms);
+        game.paused = true;
+        game.undo = s.undo;
+        Ok(game)
     }
 }
 
@@ -413,6 +517,65 @@ mod tests {
         g.hint();
         assert_eq!(g.values[idx(0, 2)], 4);
         assert!(!g.cell_error(idx(0, 2)));
+    }
+
+    #[test]
+    fn snapshots_round_trip_through_json() {
+        let mut g = test_game();
+        g.set_selected(0, 2);
+        g.enter_digit(9); // wrong
+        g.toggle_notes_mode();
+        g.set_selected(1, 1);
+        g.enter_digit(4);
+        g.enter_digit(8);
+        g.toggle_notes_mode();
+        g.set_selected(0, 3);
+        g.hint();
+        let saved = g.snapshot();
+        let json = serde_json::to_string(&saved).unwrap();
+        let mut back = Game::restore(serde_json::from_str(&json).unwrap()).unwrap();
+        assert_eq!(back.difficulty, g.difficulty);
+        assert_eq!(back.values, g.values);
+        assert_eq!(back.given, g.given);
+        assert_eq!(back.notes, g.notes);
+        assert_eq!(back.hinted, g.hinted);
+        assert_eq!(back.selected, g.selected);
+        assert_eq!(back.mistakes, 1);
+        assert_eq!(back.hints_used, 1);
+        assert!(back.paused, "restored games wait with the clock stopped");
+        assert!(!back.completed);
+        assert_eq!(back.elapsed(), Duration::from_millis(saved.elapsed_ms));
+        back.set_paused(false);
+        // Undo history survives the trip.
+        for _ in 0..4 {
+            back.undo();
+            g.undo();
+            assert_eq!(back.values, g.values);
+            assert_eq!(back.notes, g.notes);
+            assert_eq!(back.hinted, g.hinted);
+        }
+        assert_eq!(back.values[idx(0, 2)], 0, "back to the start");
+    }
+
+    #[test]
+    fn restore_rejects_tampered_or_finished_saves() {
+        let good = test_game().snapshot();
+        assert!(Game::restore(good.clone()).is_ok());
+        let tampered: [fn(&mut SavedGame); 8] = [
+            |s| s.version = 99,
+            |s| s.values.replace_range(0..1, "9"), // overwrites a given
+            |s| s.solution.replace_range(0..2, "35"),
+            |s| s.puzzle = "0".repeat(81),     // not unique
+            |s| s.values = s.solution.clone(), // already solved
+            |s| s.notes[2] = 1,                // bit 0 isn't a digit
+            |s| s.hinted = vec![0],            // can't hint a given
+            |s| s.selected = (9, 0),
+        ];
+        for (n, tamper) in tampered.iter().enumerate() {
+            let mut s = good.clone();
+            tamper(&mut s);
+            assert!(Game::restore(s).is_err(), "tampering #{n} slipped through");
+        }
     }
 
     #[test]

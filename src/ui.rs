@@ -10,7 +10,9 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Clear, Paragraph},
 };
 
-use crate::app::{Action, App, BoardAction, Overlay};
+use std::time::Duration;
+
+use crate::app::{Action, App, BoardAction, MenuRow, Overlay};
 use crate::deal::Difficulty;
 use crate::game::Game;
 use crate::sudoku::{box_of, idx};
@@ -295,7 +297,15 @@ fn draw_button(frame: &mut Frame, rect: Rect, btn: &Button, hits: &mut Vec<Hit>)
     frame.render_widget(Paragraph::new(line).alignment(Alignment::Center), inner);
 }
 
-fn header_lines(game: &Game) -> (Line<'static>, Line<'static>) {
+/// "best 08:12", or a dash before the first hint-free solve.
+fn best_label(best: Option<Duration>) -> String {
+    best.map_or_else(
+        || "best —".to_string(),
+        |t| format!("best {}", format_time(t)),
+    )
+}
+
+fn header_lines(game: &Game, best: Option<Duration>) -> (Line<'static>, Line<'static>) {
     let diff = game.difficulty;
     let (done, total) = game.progress();
     let bar_w = 14;
@@ -315,9 +325,10 @@ fn header_lines(game: &Game) -> (Line<'static>, Line<'static>) {
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!("{}  ", diff.blurb()),
+            format!("{}   ", diff.blurb()),
             Style::default().fg(DIM).add_modifier(Modifier::DIM),
         ),
+        Span::styled(best_label(best), Style::default().fg(AMBER)),
     ]);
     if game.completed {
         let bottom = Line::from(vec![
@@ -389,33 +400,71 @@ fn popup(frame: &mut Frame, area: Rect, w: u16, h: u16, title: &str) -> (Rect, R
     (r, inner)
 }
 
-fn draw_levels_menu(frame: &mut Frame, area: Rect, cursor: usize, hits: &mut Vec<Hit>) -> Rect {
-    let (r, inner) = popup(frame, area, 50, 16, "New game — pick difficulty");
+/// Text width of one level-menu row.
+const MENU_TEXT_W: usize = 58;
+
+/// A menu of levels (and, on the title screen, "Continue"), with best
+/// times. Returns the popup's frame; each row registers its own click.
+fn draw_levels_menu(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    rows: &[MenuRow],
+    cursor: usize,
+    footer: &str,
+    hits: &mut Vec<Hit>,
+) -> Rect {
+    let title = if rows.contains(&MenuRow::Continue) {
+        "Welcome back"
+    } else {
+        "New game — pick difficulty"
+    };
+    let h = rows.len() as u16 + 6;
+    let (r, inner) = popup(frame, area, MENU_TEXT_W as u16 + 4, h, title);
     let mut lines: Vec<Line> = vec![
-        Line::from(Span::styled(
-            " arrows/hjkl + Enter, keys 1-5, or click ",
+        Line::styled(
+            " arrows/hjkl + Enter, keys 1-5, or click",
             Style::default().fg(DIM).add_modifier(Modifier::DIM),
-        )),
+        ),
         Line::from(""),
     ];
-    for (i, d) in Difficulty::ALL.iter().enumerate() {
+    for (i, &row) in rows.iter().enumerate() {
         let sel = i == cursor;
         let marker = if sel { "▶" } else { " " };
-        lines.push(Line::from(vec![Span::styled(
-            format!(" {marker} {}. {:<6}  {} ", i + 1, d.name(), d.blurb()),
+        let (text, action) = match row {
+            MenuRow::Continue => {
+                let Some(g) = &app.resume else { continue };
+                let (done, total) = g.progress();
+                let text = format!(
+                    " {marker} c. Continue  {} · {} · {done}/{total} done",
+                    g.difficulty.name(),
+                    format_time(g.elapsed()),
+                );
+                (text, Action::Continue)
+            }
+            MenuRow::Level(d) => {
+                let best = best_label(app.stats.level(d).best());
+                let text = format!(
+                    " {marker} {}. {:<6}  {:<31}  {best:>10}",
+                    d.index() + 1,
+                    d.name(),
+                    d.blurb(),
+                );
+                (text, Action::StartLevel(d))
+            }
+        };
+        lines.push(Line::styled(
+            format!("{text:<MENU_TEXT_W$}"),
             Style::default()
                 .fg(if sel { Color::White } else { INK })
                 .bg(if sel { SEL_BG } else { POPUP_BG })
                 .add_modifier(Modifier::BOLD),
-        )]));
-        let row = Rect::new(r.x + 1, inner.y + 2 + i as u16, r.width - 2, 1);
-        push_hit(hits, row, Some(Action::StartLevel(*d)));
+        ));
+        let hit = Rect::new(r.x + 1, inner.y + 2 + i as u16, r.width - 2, 1);
+        push_hit(hits, hit, Some(action));
     }
     lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        " Enter start   Esc cancel ",
-        Style::default().fg(DIM),
-    )));
+    lines.push(Line::styled(footer.to_string(), Style::default().fg(DIM)));
     frame.render_widget(Paragraph::new(lines), inner);
     r
 }
@@ -476,8 +525,22 @@ fn draw_paused(frame: &mut Frame, area: Rect) {
 }
 
 /// Returns the popup's frame and its two buttons.
-fn draw_won(frame: &mut Frame, area: Rect, game: &Game) -> (Rect, Rect, Rect) {
+fn draw_won(frame: &mut Frame, area: Rect, game: &Game, app: &App) -> (Rect, Rect, Rect) {
     let (r, inner) = popup(frame, area, 48, 13, "Solved!");
+    let best = app.stats.level(game.difficulty).best();
+    let record = if app.new_best {
+        Line::styled(
+            "★ New best time! ★",
+            Style::default().fg(AMBER).add_modifier(Modifier::BOLD),
+        )
+    } else if game.hints_used > 0 {
+        Line::styled(
+            "best times count hint-free solves only",
+            Style::default().fg(DIM),
+        )
+    } else {
+        Line::styled(best_label(best), Style::default().fg(DIM))
+    };
     let lines = vec![
         Line::styled(
             format!("{} puzzle cleared", game.difficulty.name()),
@@ -493,6 +556,7 @@ fn draw_won(frame: &mut Frame, area: Rect, game: &Game) -> (Rect, Rect, Rect) {
             ),
             Style::default().fg(INK),
         ),
+        record,
         Line::from(""),
         Line::styled(
             "Enter new · d levels · Esc view board",
@@ -560,13 +624,15 @@ fn draw_overlay(frame: &mut Frame, area: Rect, app: &App, overlay: Overlay, hits
         Overlay::Paused => draw_paused(frame, area),
         Overlay::Levels { cursor } => {
             let mut rows = Vec::new();
-            let r = draw_levels_menu(frame, area, cursor, &mut rows);
+            let levels = Difficulty::ALL.map(MenuRow::Level);
+            let footer = " Enter start   Esc cancel";
+            let r = draw_levels_menu(frame, area, app, &levels, cursor, footer, &mut rows);
             push_hit(hits, r, None);
             hits.extend(rows);
         }
         Overlay::Won => {
             let Some(game) = &app.game else { return };
-            let (r, new_btn, levels_btn) = draw_won(frame, area, game);
+            let (r, new_btn, levels_btn) = draw_won(frame, area, game, app);
             push_hit(hits, r, None);
             push_hit(hits, new_btn, Some(Action::NewGame));
             push_hit(hits, levels_btn, Some(Action::OpenLevels));
@@ -587,7 +653,13 @@ fn draw_too_small(frame: &mut Frame, area: Rect) {
     );
 }
 
-fn draw_title(frame: &mut Frame, area: Rect, cursor: usize, hits: &mut Vec<Hit>) {
+fn draw_title(frame: &mut Frame, area: Rect, app: &App, hits: &mut Vec<Hit>) {
+    let rows = app.menu_rows();
+    let prompt = if app.resume.is_some() {
+        "pick up where you left off, or deal a fresh puzzle"
+    } else {
+        "pick a difficulty to deal a fresh puzzle"
+    };
     let title = vec![
         Line::styled(
             "TUDOKU",
@@ -595,15 +667,12 @@ fn draw_title(frame: &mut Frame, area: Rect, cursor: usize, hits: &mut Vec<Hit>)
         ),
         Line::styled("offline sudoku for your terminal", Style::default().fg(DIM)),
         Line::from(""),
-        Line::styled(
-            "pick a difficulty to deal a fresh puzzle",
-            Style::default().fg(INK),
-        ),
+        Line::styled(prompt, Style::default().fg(INK)),
     ];
-    let menu = centered_rect(area, 50, 16);
+    let footer = " Enter start   ? help   q quit";
+    let menu = draw_levels_menu(frame, area, app, &rows, app.menu_cursor, footer, hits);
     let tr = Rect::new(area.x, menu.y.saturating_sub(6), area.width, 5);
     frame.render_widget(Paragraph::new(title).alignment(Alignment::Center), tr);
-    draw_levels_menu(frame, area, cursor, hits);
 }
 
 fn draw_panel(frame: &mut Frame, game: &Game, x: u16, y: u16, hits: &mut Vec<Hit>) {
@@ -713,9 +782,10 @@ fn draw_panel(frame: &mut Frame, game: &Game, x: u16, y: u16, hits: &mut Vec<Hit
     }
 }
 
-fn draw_game(frame: &mut Frame, area: Rect, game: &Game, hits: &mut Vec<Hit>) {
+fn draw_game(frame: &mut Frame, area: Rect, app: &App, game: &Game, hits: &mut Vec<Hit>) {
     // Header (2 lines).
-    let (top, bottom) = header_lines(game);
+    let best = app.stats.level(game.difficulty).best();
+    let (top, bottom) = header_lines(game, best);
     frame.render_widget(
         Paragraph::new(vec![top, bottom]),
         Rect::new(area.x, area.y, area.width, 2),
@@ -769,8 +839,8 @@ pub fn render(frame: &mut Frame, app: &App) -> Vec<Hit> {
     }
 
     match &app.game {
-        None => draw_title(frame, area, app.menu_cursor, &mut hits),
-        Some(game) => draw_game(frame, area, game, &mut hits),
+        None => draw_title(frame, area, app, &mut hits),
+        Some(game) => draw_game(frame, area, app, game, &mut hits),
     }
     for &overlay in &app.overlays {
         draw_overlay(frame, area, app, overlay, &mut hits);
@@ -785,11 +855,12 @@ pub fn render(frame: &mut Frame, app: &App) -> Vec<Hit> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::Store;
     use crate::sudoku::test_board;
     use ratatui::{Terminal, backend::TestBackend};
 
     fn app_with_game() -> App {
-        let mut app = App::new();
+        let mut app = App::new(Store::none());
         let (p, s) = test_board();
         app.start_game(Game::new(Difficulty::Easy, p, s));
         app
@@ -870,7 +941,7 @@ mod tests {
 
     #[test]
     fn title_screen_lists_all_difficulties() {
-        let app = App::new();
+        let app = App::new(Store::none());
         let (lines, hits) = draw(&app, 100, 50);
         let screen = text(&lines);
         for d in Difficulty::ALL {

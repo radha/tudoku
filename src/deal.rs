@@ -10,12 +10,13 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use rand::Rng;
+use serde::{Deserialize, Serialize};
 
 use crate::logic::{self, Grade, Technique};
 use crate::sudoku::{self, Board, CELLS};
 
 /// Five difficulty levels, ordered easy -> zen.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Difficulty {
     Easy,
     Medium,

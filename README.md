@@ -34,6 +34,21 @@ complete grid only while a solver confirms uniqueness) and can be finished
 by logic alone — never by guessing. Puzzles are dealt on all CPU cores in
 the background; even Zen typically takes a fraction of a second.
 
+## Saves and best times
+
+Your game is saved after every move, and every few seconds while you
+think, so quitting, closing the window or a crash never costs you a
+puzzle. Next launch, the title screen offers **Continue** (Enter or `c`);
+picking a level instead starts fresh.
+
+Best times are kept per level and only count puzzles solved **without
+hints**. Everything lives in two small JSON files:
+
+- Linux: `~/.local/share/tudoku/` (or `$XDG_DATA_HOME/tudoku/`)
+- macOS: `~/Library/Application Support/tudoku/`
+
+Delete that folder to start over.
+
 ## Controls
 
 ### Keyboard
