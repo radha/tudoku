@@ -66,7 +66,7 @@ const PANEL_GAP: u16 = 3;
 const BLOCK_W: u16 = BOARD_W + PANEL_GAP + PANEL_W; // 101
 
 pub const MIN_W: u16 = BLOCK_W + 2; // 103: room for the row labels
-pub const MIN_H: u16 = 3 + BOARD_H; // 40: header (2 lines) + divider + board
+pub const MIN_H: u16 = 2 + BOARD_H; // 39: header (2 lines) + board
 
 // ------------------------------------------------------------ clicks
 
@@ -110,14 +110,20 @@ fn centered_rect(area: Rect, w: u16, h: u16) -> Rect {
 fn board_origin(area: Rect) -> (u16, u16) {
     (
         area.x + area.width.saturating_sub(BLOCK_W) / 2,
-        layout_top(area) + 3,
+        layout_top(area) + header_h(area),
     )
+}
+
+/// Rows above the board: the two header lines, plus a divider carrying the
+/// column numbers when the terminal has a row to spare.
+fn header_h(area: Rect) -> u16 {
+    if area.height > MIN_H { 3 } else { 2 }
 }
 
 /// First row of the game layout (header, board, footer), centered
 /// vertically so popups, which center on the screen, sit over the board.
 fn layout_top(area: Rect) -> u16 {
-    area.y + area.height.saturating_sub(MIN_H + 1) / 2
+    area.y + area.height.saturating_sub(header_h(area) + BOARD_H + 1) / 2
 }
 
 /// Top-left of a cell's interior.
@@ -179,19 +185,20 @@ fn grid_glyph(gx: u16, gy: u16) -> Option<(char, bool)> {
 
 // ------------------------------------------------------------ board
 
-fn draw_board(frame: &mut Frame, game: &Game, ox: u16, oy: u16, hits: &mut Vec<Hit>) {
+/// `labels_y` is the row for the column numbers: the one above the board,
+/// or on a short terminal the board's own top edge.
+fn draw_board(
+    frame: &mut Frame,
+    game: &Game,
+    ox: u16,
+    oy: u16,
+    labels_y: u16,
+    hits: &mut Vec<Hit>,
+) {
     let buf = frame.buffer_mut();
     let sel = game.selected_idx();
     let sel_val = game.values[sel];
     let (sel_r, sel_c) = game.selected;
-
-    // Column numbers above the board.
-    for c in 0..9 {
-        let (x, _) = cell_screen(ox, oy, 0, c);
-        buf[(x + CELL_W / 2, oy - 1)]
-            .set_char(char::from(b'1' + c as u8))
-            .set_fg(DIM);
-    }
 
     // Cell interiors.
     for r in 0..9 {
@@ -285,6 +292,14 @@ fn draw_board(frame: &mut Frame, game: &Game, ox: u16, oy: u16, hits: &mut Vec<H
                 });
             }
         }
+    }
+
+    // Column numbers, drawn last so they sit on the top edge when asked to.
+    for c in 0..9 {
+        let (x, _) = cell_screen(ox, oy, 0, c);
+        buf[(x + CELL_W / 2, labels_y)]
+            .set_char(char::from(b'1' + c as u8))
+            .set_fg(DIM);
     }
 }
 
@@ -846,12 +861,15 @@ fn draw_game(frame: &mut Frame, area: Rect, app: &App, game: &Game, hits: &mut V
     let best = app.stats.level(game.difficulty).best();
     let (top, bottom) = header_lines(game, best, header.width);
     frame.render_widget(Paragraph::new(vec![top, bottom]), header);
-    frame.render_widget(
-        Paragraph::new("─".repeat(usize::from(BLOCK_W))).style(Style::default().fg(GRID_THIN)),
-        Rect::new(ox, top_y + 2, BLOCK_W, 1),
-    );
+    if header_h(area) > 2 {
+        frame.render_widget(
+            Paragraph::new("─".repeat(usize::from(BLOCK_W))).style(Style::default().fg(GRID_THIN)),
+            Rect::new(ox, top_y + 2, BLOCK_W, 1),
+        );
+    }
 
-    draw_board(frame, game, ox, oy, hits);
+    let labels_y = if header_h(area) > 2 { oy - 1 } else { oy };
+    draw_board(frame, game, ox, oy, labels_y, hits);
     let panel_x = ox + BOARD_W + PANEL_GAP;
     let panel_y = oy + (BOARD_H - PANEL_H) / 2;
     draw_panel(frame, game, panel_x, panel_y, hits);
@@ -1015,6 +1033,19 @@ mod tests {
                 "{label} button missing at minimum size"
             );
         }
+        assert!(lines[0].contains("TUDOKU"), "header pushed off the top");
+        assert!(
+            lines[usize::from(MIN_H - 1)].contains('┛'),
+            "board bottom clipped"
+        );
+        // No row to spare for the divider: column numbers ride the top edge.
+        assert!(lines[2].contains("┏━━━1━━━┯"), "{}", lines[2]);
+        assert!(lines[2].contains("━━━9━━━┓"), "{}", lines[2]);
+
+        let mut app = app_with_game();
+        app.overlays.push(Overlay::Help);
+        let screen = text(&draw(&app, MIN_W, MIN_H).0);
+        assert!(screen.contains("press Esc"), "help popup clipped");
     }
 
     #[test]
@@ -1236,7 +1267,7 @@ mod tests {
     fn tall_terminals_center_the_board_under_popups() {
         let area = Rect::new(0, 0, W, 90);
         let (_, oy) = board_origin(area);
-        assert_eq!(oy, (90 - (MIN_H + 1)) / 2 + 3);
+        assert_eq!(oy, (90 - (3 + BOARD_H + 1)) / 2 + 3);
         let popup = centered_rect(area, 48, 13);
         assert!(popup.y > oy && popup.bottom() < oy + BOARD_H, "{popup:?}");
     }

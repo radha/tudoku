@@ -10,7 +10,7 @@ Play with the keyboard, the mouse, or both.
 cargo run --release
 ```
 
-Requires a terminal at least **103x40** (every cell gets its own frame, and
+Requires a terminal at least **103x39** (every cell gets its own frame, and
 the grid is drawn square on typical 2:1 fonts). A 24-bit-color terminal
 such as Ghostty, kitty, WezTerm or iTerm2 looks best; mouse support needs
 one that reports clicks (most modern ones do).
