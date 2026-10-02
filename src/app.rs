@@ -88,6 +88,8 @@ pub struct App {
     pub new_best: bool,
     store: Store,
     last_saved: Instant,
+    /// Whether the terminal window has focus, as far as we know.
+    focused: bool,
 }
 
 /// The level bound to a number key on the level menus (`1` = Easy).
@@ -113,6 +115,7 @@ impl App {
             new_best: false,
             store,
             last_saved: Instant::now(),
+            focused: true,
         };
         if app.resume.is_none() {
             app.menu_cursor = app.menu_row_of(last_level);
@@ -337,6 +340,15 @@ impl App {
         self.save();
     }
 
+    /// The terminal window gained or lost focus. Walking away pauses the
+    /// game, so the clock never runs while you're elsewhere.
+    pub fn set_focus(&mut self, focused: bool) {
+        self.focused = focused;
+        if !focused {
+            self.pause();
+        }
+    }
+
     fn play(&mut self, action: BoardAction) {
         if !self.overlays.is_empty() {
             return;
@@ -373,6 +385,10 @@ impl App {
         self.new_best = false;
         self.overlays.clear();
         self.save();
+        // Dealt while the player was in another window: wait for them.
+        if !self.focused {
+            self.pause();
+        }
     }
 }
 
@@ -691,6 +707,42 @@ mod tests {
         app.last_saved = long_ago;
         app.autosave();
         assert_eq!(app.last_saved, long_ago, "a paused game doesn't change");
+    }
+
+    #[test]
+    fn losing_focus_pauses_a_running_game_only() {
+        let mut app = app_with_game(Difficulty::Easy);
+        key(&mut app, KeyCode::Char('?'));
+        app.set_focus(false);
+        assert!(app.game.as_ref().unwrap().paused);
+        assert_eq!(app.top(), Some(Overlay::Paused), "pause covers the help");
+        app.set_focus(true);
+        assert!(
+            app.game.as_ref().unwrap().paused,
+            "coming back doesn't resume"
+        );
+        key(&mut app, KeyCode::Char('p'));
+        assert_eq!(app.top(), Some(Overlay::Help), "help is still underneath");
+
+        // Nothing to pause on the title screen or a finished board.
+        let mut title = App::new(Store::none());
+        title.set_focus(false);
+        assert!(title.overlays.is_empty());
+        let mut done = app_with_game(Difficulty::Easy);
+        solve(&mut done);
+        done.set_focus(false);
+        assert_eq!(done.top(), Some(Overlay::Won));
+    }
+
+    #[test]
+    fn a_puzzle_dealt_while_away_starts_paused() {
+        let mut app = App::new(Store::none());
+        key(&mut app, KeyCode::Char('1'));
+        app.set_focus(false); // dealing: nothing to pause yet
+        let (p, s) = test_board();
+        app.start_game(Game::new(Difficulty::Easy, p, s));
+        assert!(app.game.as_ref().unwrap().paused);
+        assert_eq!(app.top(), Some(Overlay::Paused));
     }
 
     #[test]

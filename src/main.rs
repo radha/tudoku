@@ -20,8 +20,8 @@ use std::time::{Duration, Instant};
 use crossterm::{
     cursor,
     event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind, MouseButton,
-        MouseEventKind,
+        self, DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture,
+        Event, KeyEventKind, MouseButton, MouseEventKind,
     },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -43,7 +43,12 @@ impl TerminalGuard {
     fn enter() -> io::Result<Self> {
         enable_raw_mode()?;
         let guard = TerminalGuard;
-        execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
+        execute!(
+            io::stdout(),
+            EnterAlternateScreen,
+            EnableMouseCapture,
+            EnableFocusChange
+        )?;
         Ok(guard)
     }
 }
@@ -57,6 +62,7 @@ impl Drop for TerminalGuard {
 fn restore_terminal() {
     let _ = execute!(
         io::stdout(),
+        DisableFocusChange,
         DisableMouseCapture,
         LeaveAlternateScreen,
         cursor::Show
@@ -138,6 +144,14 @@ fn event_loop(term: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> i
             }
             Event::Mouse(m) if m.kind == MouseEventKind::Down(MouseButton::Left) => {
                 ui::hit_at(&hits, m.column, m.row)
+            }
+            Event::FocusLost => {
+                app.set_focus(false);
+                None
+            }
+            Event::FocusGained => {
+                app.set_focus(true);
+                None
             }
             _ => None,
         };

@@ -64,7 +64,7 @@ Delete that folder to start over.
 | H (capital h)                  | hint: fills the next logical cell, locked |
 | N (capital n)                  | new puzzle, same difficulty               |
 | d                              | difficulty picker                         |
-| p                              | pause (hides board, stops timer)          |
+| p                              | pause (also automatic when you switch away) |
 | ? / F1                         | help                                      |
 | q                              | quit (your game is saved)                 |
 | Esc                            | close popup / view the finished board     |
@@ -86,7 +86,8 @@ Clicking outside a popup closes it, just like Esc.
 - Pencil marks, undo, hints that name their technique, erase
 - Mistake highlighting, remaining-digit counters, progress bar, timer
 - Autosave and resume, hint-free best times per level
-- Pause that hides the board and stops the clock
+- Pause that hides the board and stops the clock, automatically when
+  the terminal loses focus
 - Win screen with time / mistakes / hints and your record
 
 ## Self-checks

@@ -498,7 +498,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         ("Hint", "H (capital) — fills the next logical cell"),
         ("New", "N (capital) — fresh puzzle, same level"),
         ("Level", "d — change difficulty"),
-        ("Pause", "p — hides the board, stops timer"),
+        ("Pause", "p, or switch windows — stops the clock"),
         ("Saves", "automatic — Continue from the title screen"),
         ("Quit", "q    •    close popups: Esc"),
         ("Mouse", "click cells, the number pad, buttons"),
