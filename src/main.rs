@@ -13,7 +13,7 @@ mod sudoku;
 mod ui;
 
 use std::io::{self, Stdout};
-use std::sync::mpsc;
+use std::sync::mpsc::{self, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -120,7 +120,16 @@ fn event_loop(term: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> i
                     dealer = Some(rx);
                 }
                 Some(rx) => {
-                    if let Ok(d) = rx.try_recv() {
+                    let dealt = match rx.try_recv() {
+                        Ok(d) => Some(d),
+                        Err(TryRecvError::Empty) => None,
+                        // The dealer died without a puzzle (a worker
+                        // panicked): deal here rather than spin forever.
+                        Err(TryRecvError::Disconnected) => {
+                            Some(deal::deal(level, &mut rand::rng()))
+                        }
+                    };
+                    if let Some(d) = dealt {
                         app.start_game(Game::new(level, d.puzzle, d.solution));
                         dealer = None;
                     }

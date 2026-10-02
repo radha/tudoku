@@ -27,7 +27,7 @@ hardest one the puzzle needs:
 | Easy   | singles                                           | 45     |
 | Medium | singles                                           | ~31    |
 | Hard   | locked candidates, naked/hidden pairs & triples   | ~22-27 |
-| Expert | X-Wing, XY-Wing, naked/hidden quads               | ~22-27 |
+| Expert | X-Wing, XY-Wing (rarely a naked/hidden quad)      | ~22-27 |
 | Zen    | Swordfish, XYZ-Wing, Jellyfish                    | ~22-27 |
 
 Every puzzle has exactly one solution (cells are removed from a random

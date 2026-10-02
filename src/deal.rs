@@ -49,7 +49,7 @@ impl Difficulty {
             Difficulty::Easy => "Warm-up: singles, lots of clues",
             Difficulty::Medium => "Fewer clues, still just singles",
             Difficulty::Hard => "Needs notes: pointing & pairs",
-            Difficulty::Expert => "X-Wing, XY-Wing & quads",
+            Difficulty::Expert => "Fish & wings: X-Wing, XY-Wing",
             Difficulty::Zen => "Barely there: Swordfish & XYZ",
         }
     }
@@ -116,7 +116,7 @@ pub fn deal<R: Rng>(level: Difficulty, rng: &mut R) -> Deal {
 }
 
 /// [`deal`] on every core at once; the first worker to succeed wins. The
-/// rarest level (Zen) needs ~125 attempts of ~2ms each on average.
+/// rarest level (Zen) needs ~160 attempts of ~2ms each on average.
 pub fn deal_fast(level: Difficulty) -> Deal {
     let workers = std::thread::available_parallelism().map_or(1, NonZero::get);
     let done = AtomicBool::new(false);
