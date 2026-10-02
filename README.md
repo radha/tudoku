@@ -64,7 +64,7 @@ Delete that folder to start over.
 | H (capital h)                  | hint: fills the next logical cell, locked |
 | N (capital n)                  | new puzzle, same difficulty               |
 | d                              | difficulty picker                         |
-| p                              | pause (also automatic when you switch away) |
+| p                              | pause (automatic when you switch away)    |
 | ? / F1                         | help                                      |
 | q                              | quit (your game is saved)                 |
 | Esc                            | close popup / view the finished board     |
