@@ -197,8 +197,9 @@ impl Game {
         self.notes[i] = 0;
     }
 
+    /// Step back one edit. A solved puzzle stays solved.
     pub fn undo(&mut self) {
-        if self.paused {
+        if self.paused || self.completed {
             return;
         }
         let Some(e) = self.undo.pop() else {
@@ -212,10 +213,6 @@ impl Game {
         self.notes[e.cell] = e.prev_notes;
         self.hinted[e.cell] = e.prev_hinted;
         // Do not restore mistakes: the counter is cumulative.
-        if self.completed {
-            self.completed = false;
-            self.started = Instant::now();
-        }
         self.select_cell(e.cell);
     }
 
