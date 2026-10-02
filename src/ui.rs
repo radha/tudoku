@@ -11,8 +11,9 @@ use ratatui::{
 };
 
 use crate::app::{Action, App, BoardAction, Overlay};
+use crate::deal::Difficulty;
 use crate::game::Game;
-use crate::sudoku::{Difficulty, box_of, idx};
+use crate::sudoku::{box_of, idx};
 
 // ---------------------------------------------------------------- palette
 
@@ -389,7 +390,7 @@ fn popup(frame: &mut Frame, area: Rect, w: u16, h: u16, title: &str) -> (Rect, R
 }
 
 fn draw_levels_menu(frame: &mut Frame, area: Rect, cursor: usize, hits: &mut Vec<Hit>) -> Rect {
-    let (r, inner) = popup(frame, area, 46, 16, "New game — pick difficulty");
+    let (r, inner) = popup(frame, area, 50, 16, "New game — pick difficulty");
     let mut lines: Vec<Line> = vec![
         Line::from(Span::styled(
             " arrows/hjkl + Enter, keys 1-5, or click ",
@@ -528,12 +529,21 @@ fn draw_won(frame: &mut Frame, area: Rect, game: &Game) -> (Rect, Rect, Rect) {
     (r, new_btn, levels_btn)
 }
 
-fn draw_dealing(frame: &mut Frame, area: Rect) {
-    let (_, inner) = popup(frame, area, 30, 5, "Dealing");
+fn draw_dealing(frame: &mut Frame, area: Rect, level: Difficulty) {
+    const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    let tick = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() / 80);
+    let spin = SPINNER[(tick % SPINNER.len() as u128) as usize];
+    let (_, inner) = popup(frame, area, 36, 6, "Dealing");
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(""),
-            Line::styled("shuffling a fresh puzzle…", Style::default().fg(INK)),
+            Line::styled(
+                format!("{spin} shuffling a fresh {} puzzle", level.name()),
+                Style::default().fg(INK),
+            ),
+            Line::styled("graded by technique, logic only", Style::default().fg(DIM)),
         ])
         .alignment(Alignment::Center),
         inner,
@@ -590,7 +600,7 @@ fn draw_title(frame: &mut Frame, area: Rect, cursor: usize, hits: &mut Vec<Hit>)
             Style::default().fg(INK),
         ),
     ];
-    let menu = centered_rect(area, 46, 16);
+    let menu = centered_rect(area, 50, 16);
     let tr = Rect::new(area.x, menu.y.saturating_sub(6), area.width, 5);
     frame.render_widget(Paragraph::new(title).alignment(Alignment::Center), tr);
     draw_levels_menu(frame, area, cursor, hits);
@@ -765,9 +775,9 @@ pub fn render(frame: &mut Frame, app: &App) -> Vec<Hit> {
     for &overlay in &app.overlays {
         draw_overlay(frame, area, app, overlay, &mut hits);
     }
-    if app.dealing.is_some() {
+    if let Some(level) = app.dealing {
         push_hit(&mut hits, area, None);
-        draw_dealing(frame, area);
+        draw_dealing(frame, area, level);
     }
     hits
 }

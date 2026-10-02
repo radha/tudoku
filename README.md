@@ -16,16 +16,23 @@ reports mouse clicks (most modern ones do).
 
 ## Difficulties
 
-| Level  | Givens | Holes |
-| ------ | ------ | ----- |
-| Easy   | ~45    | 36    |
-| Medium | ~37    | 44    |
-| Hard   | ~31    | 50    |
-| Expert | ~26    | 55    |
-| Zen    | ~21    | 60    |
+Levels are graded by **what it takes to solve**, not just how many cells
+are blank. A built-in human-style solver works each puzzle with the
+techniques people use, easiest first, and a level is defined by the
+hardest one the puzzle needs:
 
-Every puzzle is guaranteed to have exactly one solution: cells are removed
-from a random complete grid only while a solver confirms uniqueness.
+| Level  | Hardest technique needed                          | Clues  |
+| ------ | ------------------------------------------------- | ------ |
+| Easy   | singles                                           | 45     |
+| Medium | singles                                           | ~31    |
+| Hard   | locked candidates, naked/hidden pairs & triples   | ~22-27 |
+| Expert | X-Wing, XY-Wing, naked/hidden quads               | ~22-27 |
+| Zen    | Swordfish, XYZ-Wing, Jellyfish                    | ~22-27 |
+
+Every puzzle has exactly one solution (cells are removed from a random
+complete grid only while a solver confirms uniqueness) and can be finished
+by logic alone — never by guessing. Puzzles are dealt on all CPU cores in
+the background; even Zen typically takes a fraction of a second.
 
 ## Controls
 
@@ -64,6 +71,6 @@ action buttons (Notes, Undo, Hint, Erase, New, Level, Pause, Help).
 ## Self-checks
 
 ```sh
-cargo test                      # solver + generator unit tests
-cargo run --release -- --offline-check   # deals one puzzle per level, asserts uniqueness
+cargo test                               # solver, grader, generator + UI tests
+cargo run --release -- --offline-check   # deals one puzzle per level, checks + reports it
 ```

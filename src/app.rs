@@ -11,8 +11,8 @@
 
 use crossterm::event::{KeyCode, KeyModifiers};
 
+use crate::deal::Difficulty;
 use crate::game::Game;
-use crate::sudoku::Difficulty;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Overlay {

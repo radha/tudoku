@@ -5,12 +5,16 @@
 //! locally; there is no network access at any point.
 
 mod app;
+mod deal;
 mod game;
+mod logic;
 mod sudoku;
 mod ui;
 
 use std::io;
-use std::time::Duration;
+use std::sync::mpsc;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use crossterm::{
     cursor,
@@ -25,8 +29,8 @@ use rand::SeedableRng;
 use ratatui::{Terminal, backend::CrosstermBackend};
 
 use crate::app::App;
+use crate::deal::{Deal, Difficulty};
 use crate::game::Game;
-use crate::sudoku::Difficulty;
 
 /// Raw mode, alternate screen and mouse capture for as long as it lives.
 /// Dropping it restores the terminal, so an early `?` return can't leave
@@ -74,19 +78,34 @@ fn run() -> io::Result<()> {
     let mut term = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     let mut app = App::new();
     let mut hits = Vec::new();
+    // A puzzle being dealt on background threads (fully offline).
+    let mut dealer: Option<mpsc::Receiver<Deal>> = None;
 
     loop {
-        term.draw(|f| hits = ui::render(f, &app))?;
-
-        // The "Dealing" popup is on screen now; generate (fully offline).
         if let Some(level) = app.dealing {
-            let (puzzle, solution) = sudoku::generate(level, &mut rand::rng());
-            app.start_game(Game::new(level, puzzle, solution));
-            continue;
+            match &dealer {
+                None => {
+                    let (tx, rx) = mpsc::channel();
+                    // Sending only fails if the app quit meanwhile.
+                    thread::spawn(move || {
+                        let _ = tx.send(deal::deal_fast(level));
+                    });
+                    dealer = Some(rx);
+                }
+                Some(rx) => {
+                    if let Ok(d) = rx.try_recv() {
+                        app.start_game(Game::new(level, d.puzzle, d.solution));
+                        dealer = None;
+                    }
+                }
+            }
         }
 
-        // Poll so the timer refreshes even without input.
-        if !event::poll(Duration::from_millis(250))? {
+        term.draw(|f| hits = ui::render(f, &app))?;
+
+        // Poll so the timer (or the dealing spinner) refreshes on its own.
+        let tick = if app.dealing.is_some() { 50 } else { 250 };
+        if !event::poll(Duration::from_millis(tick))? {
             continue;
         }
         let action = match event::read()? {
@@ -107,15 +126,26 @@ fn run() -> io::Result<()> {
 }
 
 /// Deal one puzzle per level with a fixed seed and check each one, proving
-/// the generator works without any I/O or network.
+/// the generator works without any I/O or network. Reports what each
+/// puzzle actually is, not what the level promises.
 fn offline_check() {
     let mut rng = rand::rngs::StdRng::seed_from_u64(42);
-    for d in Difficulty::ALL {
-        let (p, s) = sudoku::generate(d, &mut rng);
-        assert!(sudoku::is_valid_solution(&s), "{d:?}");
-        assert!(sudoku::is_unique(&p), "{d:?}");
-        assert_eq!(sudoku::solve_one(&p), Some(s), "{d:?}");
-        println!("{} ({} givens): OK", d.name(), d.givens());
+    for level in Difficulty::ALL {
+        let started = Instant::now();
+        let d = deal::deal(level, &mut rng);
+        let took = started.elapsed();
+        assert!(sudoku::is_valid_solution(&d.solution), "{level:?}");
+        assert!(sudoku::is_unique(&d.puzzle), "{level:?}");
+        assert_eq!(sudoku::solve_one(&d.puzzle), Some(d.solution), "{level:?}");
+        assert!(level.techniques().contains(&d.grade.hardest), "{level:?}");
+        println!(
+            "{:<6}  {} givens, hardest step: {:<17} ({} steps)  dealt in {:.0?}: OK",
+            level.name(),
+            d.givens(),
+            d.grade.hardest.name(),
+            d.grade.steps,
+            took,
+        );
     }
 }
 

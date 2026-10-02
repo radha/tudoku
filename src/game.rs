@@ -2,7 +2,8 @@
 
 use std::time::{Duration, Instant};
 
-use crate::sudoku::{Board, CELLS, Difficulty, col_of, idx, peers, row_of};
+use crate::deal::Difficulty;
+use crate::sudoku::{Board, CELLS, col_of, idx, peers, row_of};
 
 /// Snapshot of one cell (plus auto-removed peer notes) for undo.
 #[derive(Debug, Clone)]
