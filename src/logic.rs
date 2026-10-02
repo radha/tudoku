@@ -420,6 +420,21 @@ pub fn grade(puzzle: &Board) -> Option<Grade> {
     Some(grade)
 }
 
+/// The next cell a person could fill by logic from `values`, with its
+/// digit and the hardest technique needed to get there.
+pub fn next_placement(values: &Board) -> Option<(usize, u8, Technique)> {
+    let mut grid = Grid::new(values);
+    let mut hardest = Technique::NakedSingle;
+    loop {
+        let step = grid.next_step()?;
+        hardest = hardest.max(step.technique());
+        if let Step::Place { cell, digit, .. } = step {
+            return Some((cell, digit, hardest));
+        }
+        grid.apply(&step);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -467,6 +482,31 @@ mod tests {
         let g = grade(&p).unwrap();
         assert!(g.hardest <= Technique::HiddenSingle);
         assert_eq!(g.steps, 51, "one placement per empty cell");
+    }
+
+    #[test]
+    fn next_placement_is_a_correct_deduction() {
+        let (p, s) = test_board();
+        let (cell, digit, technique) = next_placement(&p).unwrap();
+        assert_eq!(p[cell], 0);
+        assert_eq!(s[cell], digit);
+        assert!(technique <= Technique::HiddenSingle);
+
+        // On an XY-Wing puzzle the first placements need the wing.
+        let p = parse_board(
+            "800000046007000020920004005000010800035740000080090004000000060600500000200006013",
+        )
+        .unwrap();
+        let s = sudoku::solve_one(&p).unwrap();
+        let mut board = p;
+        let mut hardest_seen = Technique::NakedSingle;
+        while let Some((cell, digit, technique)) = next_placement(&board) {
+            assert_eq!(s[cell], digit);
+            hardest_seen = hardest_seen.max(technique);
+            board[cell] = digit;
+        }
+        assert_eq!(board, s, "placements alone finish the puzzle");
+        assert_eq!(hardest_seen, Technique::XYWing);
     }
 
     #[test]

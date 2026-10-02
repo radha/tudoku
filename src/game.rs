@@ -3,6 +3,7 @@
 use std::time::{Duration, Instant};
 
 use crate::deal::Difficulty;
+use crate::logic::{self, Technique};
 use crate::sudoku::{Board, CELLS, col_of, idx, peers, row_of};
 
 /// Snapshot of one cell (plus auto-removed peer notes) for undo.
@@ -217,19 +218,27 @@ impl Game {
         self.select_cell(e.cell);
     }
 
-    /// Reveal the correct digit for the selected cell if it is editable,
-    /// otherwise the first editable wrong/empty cell. Hinted cells lock.
+    /// Reveal the correct digit for the selected cell if it is still open;
+    /// otherwise reveal the cell a person could deduce next, and say which
+    /// technique gets there. Hinted cells lock.
     pub fn hint(&mut self) {
         if self.completed || self.paused {
             return;
         }
         let s = self.selected_idx();
-        let target = if !self.locked(s) && self.values[s] != self.solution[s] {
-            Some(s)
+        let (i, msg) = if !self.locked(s) && !self.is_correct(s) {
+            (s, "Hint placed (locked)".to_string())
+        } else if let Some((i, _, technique)) = logic::next_placement(&self.correct_values()) {
+            let msg = if technique <= Technique::HiddenSingle {
+                format!("Hint: {} (locked)", technique.name())
+            } else {
+                format!("Hint: {}, then a single (locked)", technique.name())
+            };
+            (i, msg)
+        } else if let Some(i) = (0..CELLS).find(|&i| !self.is_correct(i)) {
+            // Logic is stuck (it shouldn't be, on a dealt puzzle).
+            (i, "Hint placed (locked)".to_string())
         } else {
-            (0..CELLS).find(|&i| !self.locked(i) && self.values[i] != self.solution[i])
-        };
-        let Some(i) = target else {
             self.say("Nothing to reveal");
             return;
         };
@@ -241,8 +250,19 @@ impl Game {
         self.hinted[i] = true;
         self.hints_used += 1;
         self.select_cell(i);
-        self.say("Hint placed (locked)");
+        self.say(&msg);
         self.mark_finished_if_done();
+    }
+
+    /// The board with wrong entries blanked: what logic may build on.
+    fn correct_values(&self) -> Board {
+        std::array::from_fn(|i| {
+            if self.is_correct(i) {
+                self.values[i]
+            } else {
+                0
+            }
+        })
     }
 
     fn is_correct(&self, i: usize) -> bool {
@@ -366,6 +386,33 @@ mod tests {
         assert_eq!(g.values[idx(0, 2)], 4);
         g.enter_digit(9);
         assert_eq!(g.values[idx(0, 2)], 4);
+    }
+
+    #[test]
+    fn hint_on_a_given_reveals_the_next_logical_cell() {
+        let mut g = test_game();
+        // A wrong entry elsewhere must not mislead the deduction.
+        g.set_selected(0, 3);
+        g.enter_digit(4);
+        let (want, digit, _) = logic::next_placement(&g.correct_values()).unwrap();
+        g.set_selected(0, 0); // a given: can't be hinted itself
+        g.hint();
+        assert_eq!(g.selected_idx(), want);
+        assert_eq!(g.values[want], digit);
+        assert!(g.hinted[want]);
+        let msg = g.message(Duration::from_secs(60)).unwrap();
+        assert!(msg.starts_with("Hint: "), "{msg}");
+        assert!(msg.contains("single"), "{msg}");
+    }
+
+    #[test]
+    fn hint_fixes_a_selected_wrong_entry() {
+        let mut g = test_game();
+        g.set_selected(0, 2);
+        g.enter_digit(9);
+        g.hint();
+        assert_eq!(g.values[idx(0, 2)], 4);
+        assert!(!g.cell_error(idx(0, 2)));
     }
 
     #[test]
