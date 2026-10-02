@@ -28,6 +28,8 @@ impl UndoEntry {
         self.cell < CELLS
             && puzzle[self.cell] == 0
             && self.prev_value <= 9
+            // Hinted cells are locked, so no edit ever starts from one.
+            && !self.prev_hinted
             && notes_ok(self.prev_notes)
             && self
                 .peer_notes
@@ -121,6 +123,9 @@ impl Game {
     }
 
     pub fn toggle_notes_mode(&mut self) {
+        if self.completed {
+            return;
+        }
         self.notes_mode = !self.notes_mode;
     }
 
@@ -216,7 +221,7 @@ impl Game {
         if !correct {
             // Mistakes are cumulative: fixing or undoing the cell later
             // must not decrement this counter.
-            self.mistakes += 1;
+            self.mistakes = self.mistakes.saturating_add(1);
             self.say("Not quite — that digit is wrong");
         }
         self.mark_finished_if_done();
@@ -289,7 +294,7 @@ impl Game {
         self.values[i] = digit;
         self.notes[i] = 0;
         self.hinted[i] = true;
-        self.hints_used += 1;
+        self.hints_used = self.hints_used.saturating_add(1);
         self.select_cell(i);
         self.say(&msg);
         self.mark_finished_if_done();
@@ -563,7 +568,7 @@ mod tests {
     fn restore_rejects_tampered_or_finished_saves() {
         let good = test_game().snapshot();
         assert!(Game::restore(good.clone()).is_ok());
-        let tampered: [fn(&mut SavedGame); 8] = [
+        let tampered: [fn(&mut SavedGame); 10] = [
             |s| s.version = 99,
             |s| s.values.replace_range(0..1, "9"), // overwrites a given
             |s| s.solution.replace_range(0..2, "35"),
@@ -572,6 +577,26 @@ mod tests {
             |s| s.notes[2] = 1,                // bit 0 isn't a digit
             |s| s.hinted = vec![0],            // can't hint a given
             |s| s.selected = (9, 0),
+            // Undo history that could never come from play: un-hinting into
+            // an empty locked cell, or editing a given.
+            |s| {
+                s.undo.push(UndoEntry {
+                    cell: 2,
+                    prev_value: 0,
+                    prev_notes: 0,
+                    prev_hinted: true,
+                    peer_notes: Vec::new(),
+                })
+            },
+            |s| {
+                s.undo.push(UndoEntry {
+                    cell: 0,
+                    prev_value: 0,
+                    prev_notes: 0,
+                    prev_hinted: false,
+                    peer_notes: Vec::new(),
+                })
+            },
         ];
         for (n, tamper) in tampered.iter().enumerate() {
             let mut s = good.clone();
@@ -618,6 +643,20 @@ mod tests {
         let (done, total) = g.progress();
         assert_eq!((done, total), (51, 51), "counts the 51 blanks, not givens");
         assert_eq!(g.remaining(), [0; 10]);
+        // A solved board is frozen: not even notes mode changes.
+        g.toggle_notes_mode();
+        assert!(!g.notes_mode);
+    }
+
+    #[test]
+    fn counters_saturate_instead_of_wrapping() {
+        let mut g = test_game();
+        g.mistakes = u32::MAX;
+        g.hints_used = u32::MAX;
+        g.set_selected(0, 2);
+        g.enter_digit(9);
+        g.hint();
+        assert_eq!((g.mistakes, g.hints_used), (u32::MAX, u32::MAX));
     }
 
     #[test]

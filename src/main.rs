@@ -12,7 +12,9 @@ mod store;
 mod sudoku;
 mod ui;
 
-use std::io::{self, Stdout};
+use std::io::{self, IsTerminal, Stdout};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -59,7 +61,14 @@ impl Drop for TerminalGuard {
     }
 }
 
+/// Leave TUI mode. Only the first call does anything: a second
+/// alternate-screen exit would jump the cursor back over whatever was
+/// printed after the first (like a panic message).
 fn restore_terminal() {
+    static RESTORED: AtomicBool = AtomicBool::new(false);
+    if RESTORED.swap(true, Ordering::SeqCst) {
+        return;
+    }
     let _ = execute!(
         io::stdout(),
         DisableFocusChange,
@@ -70,27 +79,70 @@ fn restore_terminal() {
     let _ = disable_raw_mode();
 }
 
-/// Restore the terminal before the panic message prints, so it lands on
-/// the normal screen instead of vanishing with the alternate one.
+/// Restore the terminal before a main-thread panic message prints, so it
+/// lands on the normal screen instead of vanishing with the alternate one.
+/// Panics on the dealing threads leave the screen alone: the main thread
+/// survives them and deals the puzzle itself.
 fn install_panic_hook() {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        restore_terminal();
+        if thread::current().name() == Some("main") {
+            restore_terminal();
+        }
         default_hook(info);
     }));
 }
 
+/// SIGTERM or SIGINT (e.g. `kill`) asks the event loop to stop, so the
+/// game is saved and the terminal restored on the way out. SIGHUP keeps
+/// its default: the window is gone, so there is nothing to restore.
+#[cfg(unix)]
+fn stop_on_signals() -> io::Result<Arc<AtomicBool>> {
+    use signal_hook::consts::{SIGINT, SIGTERM};
+    let stop = Arc::new(AtomicBool::new(false));
+    for signal in [SIGTERM, SIGINT] {
+        signal_hook::flag::register(signal, Arc::clone(&stop))?;
+    }
+    Ok(stop)
+}
+
+#[cfg(not(unix))]
+fn stop_on_signals() -> io::Result<Arc<AtomicBool>> {
+    Ok(Arc::new(AtomicBool::new(false)))
+}
+
+/// If the terminal goes away while SIGHUP is ignored (say, under `nohup`),
+/// crossterm's input loop spins forever on end-of-file and the main thread
+/// never gets control back. Watch for that from the side and exit; the
+/// autosave keeps the game to within a few seconds.
+fn exit_if_terminal_vanishes() {
+    if !io::stdin().is_terminal() {
+        return; // input comes from /dev/tty some other way; nothing to watch
+    }
+    thread::spawn(|| {
+        loop {
+            thread::sleep(Duration::from_millis(500));
+            if !io::stdin().is_terminal() {
+                std::process::exit(0);
+            }
+        }
+    });
+}
+
 fn run() -> io::Result<()> {
     install_panic_hook();
+    let stop = stop_on_signals()?;
     let _guard = TerminalGuard::enter()?;
+    exit_if_terminal_vanishes();
     let mut term = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     let mut app = App::new(Store::open_default());
-    // Whether the loop ends with q or a vanished terminal, keep the game.
-    // (Closing the window kills us outright with SIGHUP; autosave covers
-    // that, so a closed window costs at most a few seconds of clock.)
-    let result = event_loop(&mut term, &mut app);
-    app.save();
-    result
+    // However the loop ends (q, a signal, a dead terminal), keep the game.
+    // A failed final save is reported once the screen is restored.
+    let result = event_loop(&mut term, &mut app, &stop);
+    let saved = app
+        .save_on_exit()
+        .map_err(|e| io::Error::new(e.kind(), format!("couldn't save your game: {e}")));
+    result.and(saved)
 }
 
 /// `Ok(None)` for a call a signal interrupted: just go round again.
@@ -102,12 +154,16 @@ fn retry_interrupted<T>(r: io::Result<T>) -> io::Result<Option<T>> {
     }
 }
 
-fn event_loop(term: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> io::Result<()> {
+fn event_loop(
+    term: &mut Terminal<CrosstermBackend<Stdout>>,
+    app: &mut App,
+    stop: &AtomicBool,
+) -> io::Result<()> {
     let mut hits = Vec::new();
     // A puzzle being dealt on background threads (fully offline).
     let mut dealer: Option<mpsc::Receiver<Deal>> = None;
 
-    loop {
+    while !stop.load(Ordering::Relaxed) {
         app.autosave();
         if let Some(level) = app.dealing {
             match &dealer {
@@ -124,8 +180,10 @@ fn event_loop(term: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> i
                         Ok(d) => Some(d),
                         Err(TryRecvError::Empty) => None,
                         // The dealer died without a puzzle (a worker
-                        // panicked): deal here rather than spin forever.
+                        // panicked): deal here rather than spin forever,
+                        // and repaint over the panic message it printed.
                         Err(TryRecvError::Disconnected) => {
+                            term.clear()?;
                             Some(deal::deal(level, &mut rand::rng()))
                         }
                     };
@@ -170,6 +228,7 @@ fn event_loop(term: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> i
             return Ok(());
         }
     }
+    Ok(())
 }
 
 /// Deal one puzzle per level with a fixed seed and check each one, proving

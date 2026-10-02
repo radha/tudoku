@@ -9,6 +9,7 @@
 //! Keys and clicks both become an [`Action`], and [`App::apply`] is the one
 //! place that decides what an action does.
 
+use std::io;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -90,6 +91,8 @@ pub struct App {
     last_saved: Instant,
     /// Whether the terminal window has focus, as far as we know.
     focused: bool,
+    /// Saving has failed and the player has been told.
+    storage_failing: bool,
 }
 
 /// The level bound to a number key on the level menus (`1` = Easy).
@@ -111,11 +114,12 @@ impl App {
             last_level,
             dealing: None,
             resume,
-            stats: store.load_stats(),
+            stats: store.load_stats().unwrap_or_default(),
             new_best: false,
             store,
             last_saved: Instant::now(),
             focused: true,
+            storage_failing: false,
         };
         if app.resume.is_none() {
             app.menu_cursor = app.menu_row_of(last_level);
@@ -284,12 +288,35 @@ impl App {
     /// window) loses nothing. Finished games aren't kept.
     pub fn save(&mut self) {
         self.last_saved = Instant::now();
-        let Some(game) = &mut self.game else { return };
-        if game.completed {
-            return;
+        let saved = self.write_game();
+        self.report(saved, "Couldn't save");
+    }
+
+    /// The final save on the way out. Its error is the caller's to show,
+    /// since by then the screen is gone.
+    pub fn save_on_exit(&self) -> io::Result<()> {
+        self.write_game()
+    }
+
+    fn write_game(&self) -> io::Result<()> {
+        match &self.game {
+            Some(game) if !game.completed => self.store.save_game(game),
+            _ => Ok(()),
         }
-        if let Err(e) = self.store.save_game(game) {
-            game.say(&format!("Couldn't save: {e}"));
+    }
+
+    /// Tell the player when storage starts failing, once, rather than
+    /// drowning out every move's feedback with the same error.
+    fn report(&mut self, result: io::Result<()>, what: &str) {
+        match result {
+            Ok(()) => self.storage_failing = false,
+            Err(_) if self.storage_failing => {}
+            Err(e) => {
+                self.storage_failing = true;
+                if let Some(game) = &mut self.game {
+                    game.say(&format!("{what}: {e}"));
+                }
+            }
         }
     }
 
@@ -307,17 +334,20 @@ impl App {
 
     /// Record a solve and forget the save.
     fn finish(&mut self) {
-        let Some(game) = &mut self.game else { return };
+        let Some(game) = &self.game else { return };
+        // Another running tudoku may have recorded solves since we loaded:
+        // build on what's on disk now, not on our startup copy.
+        if let Some(on_disk) = self.store.load_stats() {
+            self.stats = on_disk;
+        }
         self.new_best = self
             .stats
             .record(game.difficulty, game.elapsed(), game.hints_used);
-        let saved = self
-            .store
-            .save_stats(&self.stats)
-            .and_then(|()| self.store.clear_game());
-        if let Err(e) = saved {
-            game.say(&format!("Couldn't save stats: {e}"));
-        }
+        // Clear the save even if the stats can't be written: a solved
+        // puzzle must never come back as "Continue".
+        let stats_saved = self.store.save_stats(&self.stats);
+        let cleared = self.store.clear_game();
+        self.report(stats_saved.and(cleared), "Couldn't save stats");
         self.overlays.push(Overlay::Won);
     }
 
@@ -743,6 +773,61 @@ mod tests {
         app.start_game(Game::new(Difficulty::Easy, p, s));
         assert!(app.game.as_ref().unwrap().paused);
         assert_eq!(app.top(), Some(Overlay::Paused));
+    }
+
+    #[test]
+    fn two_running_copies_keep_each_others_solves() {
+        let dir = tempfile::tempdir().unwrap();
+        let (p, s) = test_board();
+        let mut a = app_on_disk(&dir);
+        let mut b = app_on_disk(&dir);
+        a.start_game(Game::new(Difficulty::Easy, p, s));
+        b.start_game(Game::new(Difficulty::Easy, p, s));
+        solve(&mut b);
+        solve(&mut a); // a loaded its stats before b's solve
+        let easy = Store::at(dir.path())
+            .load_stats()
+            .unwrap()
+            .level(Difficulty::Easy);
+        assert_eq!(easy.solved, 2, "neither solve is lost");
+        assert!(!a.new_best || a.stats.level(Difficulty::Easy).best() == easy.best());
+    }
+
+    #[test]
+    fn a_solve_is_never_offered_again_even_if_stats_cant_be_written() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("stats.json")).unwrap(); // unwritable
+        let mut app = app_on_disk(&dir);
+        let (p, s) = test_board();
+        app.start_game(Game::new(Difficulty::Easy, p, s));
+        solve(&mut app);
+        let msg = app.game.as_ref().unwrap().message(Duration::from_secs(60));
+        assert!(msg.unwrap().starts_with("Couldn't save stats"), "{msg:?}");
+        assert!(app_on_disk(&dir).resume.is_none());
+    }
+
+    #[test]
+    fn a_failing_save_is_reported_once_not_on_every_move() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("not-a-dir");
+        std::fs::write(&file, "").unwrap();
+        let mut app = App::new(Store::at(&file.join("tudoku")));
+        let (p, s) = test_board();
+        app.start_game(Game::new(Difficulty::Easy, p, s));
+        let msg = |app: &App| {
+            app.game
+                .as_ref()
+                .unwrap()
+                .message(Duration::from_secs(60))
+                .map(str::to_string)
+        };
+        assert!(msg(&app).unwrap().starts_with("Couldn't save"));
+        key(&mut app, KeyCode::Char('9')); // wrong digit at (0,2)
+        assert_eq!(msg(&app).unwrap(), "Not quite — that digit is wrong");
+        assert!(
+            app.save_on_exit().is_err(),
+            "the last save's error surfaces"
+        );
     }
 
     #[test]

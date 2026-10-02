@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -43,7 +44,7 @@ impl Stats {
     /// a hint-free solve can do.
     pub fn record(&mut self, level: Difficulty, time: Duration, hints_used: u32) -> bool {
         let entry = self.levels.entry(level).or_default();
-        entry.solved += 1;
+        entry.solved = entry.solved.saturating_add(1);
         let ms = u64::try_from(time.as_millis()).unwrap_or(u64::MAX);
         let is_best = hints_used == 0 && entry.best_ms.is_none_or(|best| ms < best);
         if is_best {
@@ -112,8 +113,18 @@ impl Store {
         }
     }
 
-    pub fn load_stats(&self) -> Stats {
-        self.read(STATS_FILE).unwrap_or_default()
+    /// Stats as they are on disk now (`None` for a store that keeps
+    /// nothing). An unreadable file is moved aside to `stats.json.damaged`
+    /// rather than silently overwritten by the next solve.
+    pub fn load_stats(&self) -> Option<Stats> {
+        let path = self.path(STATS_FILE)?;
+        let Ok(text) = fs::read_to_string(&path) else {
+            return Some(Stats::default());
+        };
+        Some(serde_json::from_str(&text).unwrap_or_else(|_| {
+            let _ = fs::rename(&path, path.with_extension("json.damaged"));
+            Stats::default()
+        }))
     }
 
     pub fn save_stats(&self, stats: &Stats) -> io::Result<()> {
@@ -122,14 +133,20 @@ impl Store {
 }
 
 /// Write to a temporary file and rename it into place, so a crash mid-write
-/// never leaves a truncated save behind.
+/// never leaves a truncated save behind. Each write gets its own temporary
+/// name, so two running copies of tudoku can't clobber each other's.
 fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    static WRITES: AtomicU64 = AtomicU64::new(0);
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
-    let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, bytes)?;
-    fs::rename(&tmp, path)
+    let n = WRITES.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_extension(format!("json.{}-{n}.tmp", std::process::id()));
+    let written = fs::write(&tmp, bytes).and_then(|()| fs::rename(&tmp, path));
+    if written.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    written
 }
 
 #[cfg(test)]
@@ -167,7 +184,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::at(dir.path());
         assert!(store.load_game().is_none());
-        assert_eq!(store.load_stats(), Stats::default());
+        assert_eq!(store.load_stats(), Some(Stats::default()));
 
         let mut g = game();
         g.enter_digit(4);
@@ -178,7 +195,7 @@ mod tests {
         let mut stats = Stats::default();
         stats.record(Difficulty::Zen, Duration::from_secs(61), 0);
         store.save_stats(&stats).unwrap();
-        assert_eq!(store.load_stats(), stats);
+        assert_eq!(store.load_stats(), Some(stats));
         let text = fs::read_to_string(dir.path().join(STATS_FILE)).unwrap();
         assert!(text.contains("\"Zen\""), "levels are keyed by name: {text}");
 
@@ -194,7 +211,11 @@ mod tests {
         fs::write(dir.path().join(GAME_FILE), "{ not json").unwrap();
         fs::write(dir.path().join(STATS_FILE), "[1, 2").unwrap();
         assert!(store.load_game().is_none());
-        assert_eq!(store.load_stats(), Stats::default());
+        assert_eq!(store.load_stats(), Some(Stats::default()));
+        assert!(
+            dir.path().join("stats.json.damaged").exists(),
+            "a damaged stats file is kept, not overwritten"
+        );
     }
 
     #[test]
@@ -202,6 +223,35 @@ mod tests {
         let store = Store::none();
         store.save_game(&game()).unwrap();
         assert!(store.load_game().is_none());
+        assert_eq!(store.load_stats(), None);
         store.clear_game().unwrap();
+    }
+
+    #[test]
+    fn concurrent_writers_never_tear_or_collide() {
+        let dir = tempfile::tempdir().unwrap();
+        std::thread::scope(|s| {
+            for t in 0..2u64 {
+                let path = dir.path();
+                s.spawn(move || {
+                    let store = Store::at(path);
+                    for i in 0..200 {
+                        let mut stats = Stats::default();
+                        stats.record(Difficulty::Easy, Duration::from_secs(t * 1000 + i), 0);
+                        store.save_stats(&stats).expect("no shared temp file");
+                        assert!(store.load_stats().is_some());
+                    }
+                });
+            }
+        });
+        let leftovers: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name != STATS_FILE)
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "no temp or damaged files: {leftovers:?}"
+        );
     }
 }
