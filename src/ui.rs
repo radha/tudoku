@@ -469,7 +469,7 @@ fn draw_levels_popup(
         )),
         Line::from(""),
     ];
-    for (i, d) in Difficulty::all().iter().enumerate() {
+    for (i, d) in Difficulty::ALL.iter().enumerate() {
         let sel = i == cursor;
         let marker = if sel { "▶" } else { " " };
         lines.push(Line::from(vec![Span::styled(
@@ -948,7 +948,7 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend};
 
     fn test_game() -> Game {
-        let (p, s) = Game::test_board();
+        let (p, s) = crate::sudoku::test_board();
         Game::new(Difficulty::Easy, p, s)
     }
 

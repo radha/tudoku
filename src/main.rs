@@ -116,11 +116,11 @@ impl App {
         if self.game.is_none() {
             match code {
                 KeyCode::Up | KeyCode::Char('k') => {
-                    let n = Difficulty::all().len();
+                    let n = Difficulty::ALL.len();
                     self.menu_cursor = (self.menu_cursor + n - 1) % n;
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
-                    let n = Difficulty::all().len();
+                    let n = Difficulty::ALL.len();
                     self.menu_cursor = (self.menu_cursor + 1) % n;
                 }
                 KeyCode::Char('1'..='5') => {
@@ -128,10 +128,10 @@ impl App {
                         KeyCode::Char(c) => (c as u8 - b'1') as usize,
                         _ => 0,
                     };
-                    self.request_new_game(Difficulty::from_index(i));
+                    self.request_new_game(Difficulty::ALL[i]);
                 }
                 KeyCode::Enter | KeyCode::Char(' ') => {
-                    self.request_new_game(Difficulty::from_index(self.menu_cursor));
+                    self.request_new_game(Difficulty::ALL[self.menu_cursor]);
                 }
                 KeyCode::Char('?') | KeyCode::F(1) => {
                     self.show_help = !self.show_help;
@@ -150,11 +150,11 @@ impl App {
         if self.show_levels {
             match code {
                 KeyCode::Up | KeyCode::Char('k') => {
-                    let n = Difficulty::all().len();
+                    let n = Difficulty::ALL.len();
                     self.level_cursor = (self.level_cursor + n - 1) % n;
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
-                    let n = Difficulty::all().len();
+                    let n = Difficulty::ALL.len();
                     self.level_cursor = (self.level_cursor + 1) % n;
                 }
                 KeyCode::Char('1'..='5') => {
@@ -162,10 +162,10 @@ impl App {
                         KeyCode::Char(c) => (c as u8 - b'1') as usize,
                         _ => 0,
                     };
-                    self.request_new_game(Difficulty::from_index(i));
+                    self.request_new_game(Difficulty::ALL[i]);
                 }
                 KeyCode::Enter | KeyCode::Char(' ') => {
-                    self.request_new_game(Difficulty::from_index(self.level_cursor));
+                    self.request_new_game(Difficulty::ALL[self.level_cursor]);
                 }
                 KeyCode::Esc | KeyCode::Char('d') => {
                     self.show_levels = false;
@@ -322,10 +322,10 @@ impl App {
                 self.show_help = true;
             }
             ClickAction::LevelChoice(i) => {
-                self.request_new_game(Difficulty::from_index(i));
+                self.request_new_game(Difficulty::ALL[i]);
             }
             ClickAction::MenuChoice(i) => {
-                self.request_new_game(Difficulty::from_index(i));
+                self.request_new_game(Difficulty::ALL[i]);
             }
             ClickAction::Close => self.close_popups(),
             ClickAction::WinNew => {
@@ -432,9 +432,10 @@ fn main() {
         // Generate one puzzle per level with a fixed seed to prove the
         // offline generator works without any I/O or network.
         let mut rng = rand::rngs::StdRng::seed_from_u64(42);
-        for d in Difficulty::all() {
-            let (mut p, s) = sudoku::generate(d, &mut rng);
-            assert_eq!(sudoku::count_solutions(&mut p, 2), 1, "{:?}", d);
+        for d in Difficulty::ALL {
+            let (p, s) = sudoku::generate(d, &mut rng);
+            assert!(sudoku::is_valid_solution(&s), "{d:?}");
+            assert!(sudoku::is_unique(&p), "{d:?}");
             assert_eq!(sudoku::solve_one(&p).unwrap(), s, "{:?}", d);
             println!("{} ({} givens): OK", d.name(), d.givens());
         }
@@ -452,7 +453,7 @@ mod tests {
 
     fn app_with_completed_game(level: Difficulty) -> App {
         let mut app = App::new();
-        let (p, s) = Game::test_board();
+        let (p, s) = sudoku::test_board();
         let mut game = Game::new(level, p, s);
         game.completed = true;
         app.game = Some(game);
