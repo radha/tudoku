@@ -49,35 +49,6 @@ const ACCENT: Color = Color::Rgb(64, 216, 240);
 const GREEN: Color = Color::Rgb(84, 222, 150);
 const RED: Color = Color::Rgb(255, 112, 112);
 
-// ------------------------------------------------------------ digits
-
-// Placed digits are drawn 3x3 in box-drawing strokes, so they stand well
-// clear of the one-column pencil marks. Givens get heavy strokes, as if
-// printed; your entries get light, rounded ones, as if penned — the two
-// differ in weight as well as color.
-const HEAVY_DIGITS: [[&str; 3]; 9] = [
-    ["╺┓ ", " ┃ ", "╺┻╸"],
-    ["╺━┓", "┏━┛", "┗━╸"],
-    ["╺━┓", " ━┫", "╺━┛"],
-    ["╻ ╻", "┗━┫", "  ╹"],
-    ["┏━╸", "┗━┓", "╺━┛"],
-    ["┏━╸", "┣━┓", "┗━┛"],
-    ["╺━┓", "  ┃", "  ╹"],
-    ["┏━┓", "┣━┫", "┗━┛"],
-    ["┏━┓", "┗━┫", "╺━┛"],
-];
-const LIGHT_DIGITS: [[&str; 3]; 9] = [
-    ["╶┐ ", " │ ", "╶┴╴"],
-    ["╶─╮", "╭─╯", "╰─╴"],
-    ["╶─╮", " ─┤", "╶─╯"],
-    ["╷ ╷", "╰─┤", "  ╵"],
-    ["╭─╴", "╰─╮", "╶─╯"],
-    ["╭─╴", "├─╮", "╰─╯"],
-    ["╶─╮", "  │", "  ╵"],
-    ["╭─╮", "├─┤", "╰─╯"],
-    ["╭─╮", "╰─┤", "╶─╯"],
-];
-
 // ------------------------------------------------------------ sizing
 
 // Every cell has its own frame, so the grid pitch is (CELL_W+1) x (CELL_H+1).
@@ -306,18 +277,9 @@ fn draw_board(
                 } else {
                     PEN
                 };
-                let (font, style) = if game.given[i] {
-                    (
-                        &HEAVY_DIGITS,
-                        Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
-                    )
-                } else {
-                    (&LIGHT_DIGITS, Style::default().fg(fg).bg(bg))
-                };
-                let gx = x + (CELL_W - 3) / 2;
-                for (dy, row) in font[usize::from(v - 1)].iter().enumerate() {
-                    buf.set_string(gx, y + dy as u16, row, style);
-                }
+                buf[(x + CELL_W / 2, ym)]
+                    .set_char(char::from(b'0' + v))
+                    .set_style(Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD));
                 // Conflict marker: duplicates show even without color.
                 if err {
                     buf[(x, ym)].set_char('!').set_style(
@@ -1215,8 +1177,7 @@ mod tests {
         // Board hidden while paused: the given 5 at (0,0) isn't drawn.
         assert_eq!(cell_row(&lines, 0, 0, 1), " ".repeat(usize::from(CELL_W)));
         let (lines, _) = draw(&app_with_game(), W, 50);
-        let five = format!("  {}  ", HEAVY_DIGITS[4][1]);
-        assert_eq!(cell_row(&lines, 0, 0, 1), five, "and is when unpaused");
+        assert_eq!(cell_row(&lines, 0, 0, 1), "   5   ", "and is when unpaused");
     }
 
     #[test]
@@ -1390,30 +1351,18 @@ mod tests {
     }
 
     #[test]
-    fn givens_print_heavy_and_entries_light() {
+    fn placed_digits_sit_alone_at_the_cell_center() {
         let mut app = app_with_game();
         let game = app.game.as_mut().unwrap();
         // (0,2) is empty in the test puzzle, and its solution is 4.
         game.set_selected(0, 2);
         game.enter_digit(4);
         let (lines, _) = draw(&app, W, 50);
-        for dy in 0..CELL_H {
-            let row = usize::from(dy);
-            let given = format!("  {}  ", HEAVY_DIGITS[2][row]);
-            let entry = format!("  {}  ", LIGHT_DIGITS[3][row]);
-            assert_eq!(cell_row(&lines, 0, 1, dy), given, "given 3");
-            assert_eq!(cell_row(&lines, 0, 2, dy), entry, "entered 4");
-        }
-    }
-
-    #[test]
-    fn every_digit_glyph_is_three_columns() {
-        for font in [&HEAVY_DIGITS, &LIGHT_DIGITS] {
-            for rows in font {
-                for row in rows {
-                    assert_eq!(Line::raw(*row).width(), 3, "{row:?}");
-                }
-            }
+        let blank = " ".repeat(usize::from(CELL_W));
+        for (col, digit) in [(1, "   3   "), (2, "   4   ")] {
+            assert_eq!(cell_row(&lines, 0, col, 0), blank);
+            assert_eq!(cell_row(&lines, 0, col, 1), digit);
+            assert_eq!(cell_row(&lines, 0, col, 2), blank);
         }
     }
 
