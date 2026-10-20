@@ -387,7 +387,7 @@ impl App {
         let was_done = g.completed;
         match action {
             BoardAction::Move(dr, dc) => g.move_selection(dr, dc),
-            BoardAction::Select(r, c) => g.set_selected(r, c),
+            BoardAction::Select(r, c) => g.click(r, c),
             BoardAction::Digit(d) => g.enter_digit(d),
             BoardAction::Erase => g.erase(),
             BoardAction::ToggleNotes => g.toggle_notes_mode(),

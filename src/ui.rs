@@ -43,7 +43,10 @@ const GRID_BOX: Color = Color::Rgb(128, 140, 170);
 const INK: Color = Color::Rgb(236, 239, 245);
 const BRIGHT: Color = Color::Rgb(255, 255, 255);
 const MUTED: Color = Color::Rgb(142, 152, 178);
-const NOTE: Color = Color::Rgb(174, 184, 214);
+// Notes sit well below the placed digits, so the two never read alike.
+const NOTE: Color = Color::Rgb(104, 114, 142);
+// ...but the selected cell's bright fill would swallow that gray.
+const NOTE_SEL: Color = Color::Rgb(190, 208, 250);
 const PEN: Color = Color::Rgb(255, 196, 92);
 const ACCENT: Color = Color::Rgb(64, 216, 240);
 const GREEN: Color = Color::Rgb(84, 222, 150);
@@ -212,8 +215,7 @@ fn draw_board(
     hits: &mut Vec<Hit>,
 ) {
     let buf = frame.buffer_mut();
-    let sel = game.selected_idx();
-    let sel_val = game.values[sel];
+    let sel_val = game.highlight();
     let (sel_r, sel_c) = game.selected;
 
     // The selected row and column numbers light up, to find your place.
@@ -277,9 +279,15 @@ fn draw_board(
                 } else {
                     PEN
                 };
-                buf[(x + CELL_W / 2, ym)]
-                    .set_char(char::from(b'0' + v))
-                    .set_style(Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD));
+                // Fullwidth digits fill two columns, so they draw a size up
+                // from the one-column pencil marks.
+                let digit = char::from_u32(0xFF10 + u32::from(v)).unwrap();
+                buf.set_string(
+                    x + CELL_W / 2,
+                    ym,
+                    digit.to_string(),
+                    Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
+                );
                 // Conflict marker: duplicates show even without color.
                 if err {
                     buf[(x, ym)].set_char('!').set_style(
@@ -291,11 +299,13 @@ fn draw_board(
                 }
             } else {
                 // Pencil marks as a 3x3 mini-grid, centered on the value
-                // spot. Marks for the selected digit stand out, to show
+                // spot. Marks for the highlighted digit stand out, to show
                 // where it can still go.
-                let note_style = Style::default().fg(NOTE).bg(bg);
+                let note_style = Style::default()
+                    .fg(if is_sel { NOTE_SEL } else { NOTE })
+                    .bg(bg);
                 let match_style = Style::default()
-                    .fg(ACCENT)
+                    .fg(if is_sel { BRIGHT } else { ACCENT })
                     .bg(bg)
                     .add_modifier(Modifier::BOLD);
                 for d in 1..=9u8 {
@@ -794,11 +804,7 @@ fn draw_title(frame: &mut Frame, area: Rect, app: &App, hits: &mut Vec<Hit>) {
 fn draw_panel(frame: &mut Frame, game: &Game, x: u16, y: u16, hits: &mut Vec<Hit>) {
     // Number pad: 3x3 grid of digit buttons.
     let remaining = game.remaining();
-    let sel_val = if game.paused {
-        0
-    } else {
-        game.values[game.selected_idx()]
-    };
+    let sel_val = if game.paused { 0 } else { game.highlight() };
     for d in 1..=9u8 {
         let col = u16::from(d - 1) % 3;
         let row = u16::from(d - 1) / 3;
@@ -810,7 +816,7 @@ fn draw_panel(frame: &mut Frame, game: &Game, x: u16, y: u16, hits: &mut Vec<Hit
         );
         let left = remaining[usize::from(d)];
         let done = left == 0;
-        // The key for the selected cell's digit is lit, like its cells.
+        // The key for the highlighted digit is lit, like its cells.
         let border = if done {
             Style::default().fg(GRID_THIN)
         } else if d == sel_val {
@@ -1177,7 +1183,11 @@ mod tests {
         // Board hidden while paused: the given 5 at (0,0) isn't drawn.
         assert_eq!(cell_row(&lines, 0, 0, 1), " ".repeat(usize::from(CELL_W)));
         let (lines, _) = draw(&app_with_game(), W, 50);
-        assert_eq!(cell_row(&lines, 0, 0, 1), "   5   ", "and is when unpaused");
+        assert_eq!(
+            cell_row(&lines, 0, 0, 1),
+            "   ５   ",
+            "and is when unpaused"
+        );
     }
 
     #[test]
@@ -1359,7 +1369,7 @@ mod tests {
         game.enter_digit(4);
         let (lines, _) = draw(&app, W, 50);
         let blank = " ".repeat(usize::from(CELL_W));
-        for (col, digit) in [(1, "   3   "), (2, "   4   ")] {
+        for (col, digit) in [(1, "   ３   "), (2, "   ４   ")] {
             assert_eq!(cell_row(&lines, 0, col, 0), blank);
             assert_eq!(cell_row(&lines, 0, col, 1), digit);
             assert_eq!(cell_row(&lines, 0, col, 2), blank);

@@ -67,6 +67,9 @@ pub struct Game {
     pub notes: [u16; CELLS],
     pub hinted: [bool; CELLS],
     pub selected: (usize, usize),
+    /// The digit last picked on purpose, by clicking a placed digit or
+    /// typing one. It stays highlighted while you visit empty cells.
+    pinned: u8,
     pub notes_mode: bool,
     pub mistakes: u32,
     pub hints_used: u32,
@@ -91,6 +94,7 @@ impl Game {
             notes: [0; CELLS],
             hinted: [false; CELLS],
             selected: (row_of(first), col_of(first)),
+            pinned: 0,
             notes_mode: false,
             mistakes: 0,
             hints_used: 0,
@@ -120,6 +124,26 @@ impl Game {
 
     pub fn set_selected(&mut self, row: usize, col: usize) {
         self.selected = (row.min(8), col.min(8));
+    }
+
+    /// Select a cell by clicking it. Clicking a placed digit pins its
+    /// highlight; arrowing onto one only shows it while you're there, so
+    /// digits you pass on the way don't steal the highlight.
+    pub fn click(&mut self, row: usize, col: usize) {
+        self.set_selected(row, col);
+        let v = self.values[self.selected_idx()];
+        if v != 0 {
+            self.pinned = v;
+        }
+    }
+
+    /// The digit to highlight across the board: the selected cell's own
+    /// digit, else the pinned one.
+    pub fn highlight(&self) -> u8 {
+        match self.values[self.selected_idx()] {
+            0 => self.pinned,
+            v => v,
+        }
     }
 
     pub fn toggle_notes_mode(&mut self) {
@@ -191,7 +215,11 @@ impl Game {
             return;
         }
         debug_assert!((1..=9).contains(&digit));
+        self.pinned = digit;
         let i = self.selected_idx();
+        if self.values[i] == digit {
+            return; // already showing this digit: just pins it
+        }
         if self.locked(i) {
             self.say("Locked cell");
             return;
@@ -204,9 +232,6 @@ impl Game {
             self.push_undo(i, Vec::new());
             self.notes[i] ^= 1 << digit;
             return;
-        }
-        if self.values[i] == digit {
-            return; // already showing this digit, no-op
         }
         // Auto-clean peer notes when a correct digit is placed.
         let correct = self.solution[i] == digit;
@@ -444,6 +469,36 @@ mod tests {
     fn starts_on_first_editable_cell() {
         let g = test_game();
         assert_eq!(g.selected, (0, 2));
+    }
+
+    #[test]
+    fn clicked_digits_pin_the_highlight_and_arrows_only_peek() {
+        // Row 0 is 5 3 _ _ 7 _ _ _ _.
+        let mut g = test_game();
+        assert_eq!(g.highlight(), 0, "nothing picked yet");
+        g.click(0, 1);
+        assert_eq!(g.highlight(), 3);
+        g.click(0, 2);
+        assert_eq!(g.highlight(), 3, "an empty cell keeps it");
+        g.move_selection(0, 2);
+        assert_eq!(g.highlight(), 7, "the 7 shows while you're on it");
+        g.move_selection(0, 1);
+        assert_eq!(g.highlight(), 3, "but passing it doesn't steal the pin");
+    }
+
+    #[test]
+    fn typed_digits_pin_the_highlight() {
+        let mut g = test_game();
+        g.toggle_notes_mode();
+        g.set_selected(0, 2);
+        g.enter_digit(2);
+        g.move_selection(0, 1);
+        assert_eq!(g.highlight(), 2, "a typed note pins its digit");
+        g.set_selected(0, 0); // a given 5
+        g.enter_digit(5);
+        assert_eq!(g.status, None, "typing a cell's own digit just pins it");
+        g.set_selected(0, 3);
+        assert_eq!(g.highlight(), 5);
     }
 
     #[test]
