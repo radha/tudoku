@@ -19,19 +19,64 @@ use crate::sudoku::{box_of, idx};
 
 // ---------------------------------------------------------------- palette
 
-const BG: Color = Color::Reset;
-const INK: Color = Color::Rgb(226, 232, 240);
-const DIM: Color = Color::Rgb(100, 116, 139);
-const ACCENT: Color = Color::Rgb(34, 211, 238);
-const AMBER: Color = Color::Rgb(251, 191, 36);
-const GREEN: Color = Color::Rgb(52, 211, 153);
-const RED: Color = Color::Rgb(248, 113, 113);
-const GRID_THIN: Color = Color::Rgb(71, 85, 105);
-const GRID_BOX: Color = Color::Rgb(34, 211, 238);
-const PEER_BG: Color = Color::Rgb(30, 41, 59);
-const SAME_BG: Color = Color::Rgb(51, 65, 85);
-const SEL_BG: Color = Color::Rgb(37, 99, 235);
-const POPUP_BG: Color = Color::Rgb(15, 23, 42);
+// Every color is explicit RGB, backgrounds included, so the game looks the
+// same whatever theme the terminal runs — a light theme or a washed-out
+// ANSI palette can't bleed through. Nothing uses the terminal's DIM
+// attribute either: it halves contrast unpredictably, so secondary text
+// gets its own readable color instead.
+
+// Surfaces, darkest first.
+const BG: Color = Color::Rgb(13, 15, 22);
+const SURFACE: Color = Color::Rgb(21, 24, 34);
+const POPUP_BG: Color = Color::Rgb(27, 31, 45);
+const PEER_BG: Color = Color::Rgb(33, 39, 57);
+const SAME_BG: Color = Color::Rgb(39, 58, 104);
+const ERR_BG: Color = Color::Rgb(74, 27, 38);
+const SEL_BG: Color = Color::Rgb(56, 108, 240);
+
+// Lines.
+const GRID_THIN: Color = Color::Rgb(46, 53, 72);
+const LINE: Color = Color::Rgb(74, 84, 110);
+const GRID_BOX: Color = Color::Rgb(128, 140, 170);
+
+// Text.
+const INK: Color = Color::Rgb(236, 239, 245);
+const BRIGHT: Color = Color::Rgb(255, 255, 255);
+const MUTED: Color = Color::Rgb(142, 152, 178);
+const NOTE: Color = Color::Rgb(174, 184, 214);
+const PEN: Color = Color::Rgb(255, 196, 92);
+const ACCENT: Color = Color::Rgb(64, 216, 240);
+const GREEN: Color = Color::Rgb(84, 222, 150);
+const RED: Color = Color::Rgb(255, 112, 112);
+
+// ------------------------------------------------------------ digits
+
+// Placed digits are drawn 3x3 in box-drawing strokes, so they stand well
+// clear of the one-column pencil marks. Givens get heavy strokes, as if
+// printed; your entries get light, rounded ones, as if penned — the two
+// differ in weight as well as color.
+const HEAVY_DIGITS: [[&str; 3]; 9] = [
+    ["╺┓ ", " ┃ ", "╺┻╸"],
+    ["╺━┓", "┏━┛", "┗━╸"],
+    ["╺━┓", " ━┫", "╺━┛"],
+    ["╻ ╻", "┗━┫", "  ╹"],
+    ["┏━╸", "┗━┓", "╺━┛"],
+    ["┏━╸", "┣━┓", "┗━┛"],
+    ["╺━┓", "  ┃", "  ╹"],
+    ["┏━┓", "┣━┫", "┗━┛"],
+    ["┏━┓", "┗━┫", "╺━┛"],
+];
+const LIGHT_DIGITS: [[&str; 3]; 9] = [
+    ["╶┐ ", " │ ", "╶┴╴"],
+    ["╶─╮", "╭─╯", "╰─╴"],
+    ["╶─╮", " ─┤", "╶─╯"],
+    ["╷ ╷", "╰─┤", "  ╵"],
+    ["╭─╴", "╰─╮", "╶─╯"],
+    ["╭─╴", "├─╮", "╰─╯"],
+    ["╶─╮", "  │", "  ╵"],
+    ["╭─╮", "├─┤", "╰─╯"],
+    ["╭─╮", "╰─┤", "╶─╯"],
+];
 
 // ------------------------------------------------------------ sizing
 
@@ -200,13 +245,22 @@ fn draw_board(
     let sel_val = game.values[sel];
     let (sel_r, sel_c) = game.selected;
 
+    // The selected row and column numbers light up, to find your place.
+    let label = |on: bool| {
+        if on && !game.paused {
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(MUTED)
+        }
+    };
+
     // Cell interiors.
     for r in 0..9 {
         // Row number to the left, vertically centered on the cell.
         let (_, y) = cell_screen(ox, oy, r, 0);
         buf[(ox - 1, y + CELL_H / 2)]
             .set_char(char::from(b'1' + r as u8))
-            .set_fg(DIM);
+            .set_style(label(r == sel_r));
         for c in 0..9 {
             let i = idx(r, c);
             let (x, y) = cell_screen(ox, oy, r, c);
@@ -214,16 +268,19 @@ fn draw_board(
             let peer =
                 !is_sel && (r == sel_r || c == sel_c || box_of(r, c) == box_of(sel_r, sel_c));
             let same_val = !is_sel && sel_val != 0 && game.values[i] == sel_val;
+            let err = game.values[i] != 0 && game.cell_error(i);
             let bg = if game.paused {
-                BG
+                SURFACE
             } else if is_sel {
                 SEL_BG
+            } else if err {
+                ERR_BG
             } else if same_val {
                 SAME_BG
             } else if peer {
                 PEER_BG
             } else {
-                BG
+                SURFACE
             };
             let cell_rect = Rect::new(x, y, CELL_W, CELL_H);
             buf.set_style(cell_rect, Style::default().bg(bg));
@@ -238,58 +295,76 @@ fn draw_board(
             let ym = y + CELL_H / 2;
             let v = game.values[i];
             if v != 0 {
-                let err = game.cell_error(i);
-                let fg = if err {
+                let fg = if is_sel {
+                    BRIGHT
+                } else if err {
                     RED
                 } else if game.given[i] {
                     INK
                 } else if game.hinted[i] {
                     GREEN
                 } else {
-                    AMBER
+                    PEN
                 };
-                let mut style = Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD);
-                if is_sel {
-                    style = style.fg(Color::White);
+                let (font, style) = if game.given[i] {
+                    (
+                        &HEAVY_DIGITS,
+                        Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
+                    )
+                } else {
+                    (&LIGHT_DIGITS, Style::default().fg(fg).bg(bg))
+                };
+                let gx = x + (CELL_W - 3) / 2;
+                for (dy, row) in font[usize::from(v - 1)].iter().enumerate() {
+                    buf.set_string(gx, y + dy as u16, row, style);
                 }
-                buf[(x + CELL_W / 2, ym)]
-                    .set_char(char::from(b'0' + v))
-                    .set_style(style);
                 // Conflict marker: duplicates show even without color.
                 if err {
-                    buf[(x, ym)]
-                        .set_char('!')
-                        .set_style(Style::default().fg(RED).bg(bg).add_modifier(Modifier::BOLD));
+                    buf[(x, ym)].set_char('!').set_style(
+                        Style::default()
+                            .fg(if is_sel { BRIGHT } else { RED })
+                            .bg(bg)
+                            .add_modifier(Modifier::BOLD),
+                    );
                 }
             } else {
-                // Pencil marks as a 3x3 mini-grid, centered on the value spot.
-                let note_style = Style::default().fg(DIM).bg(bg).add_modifier(Modifier::DIM);
+                // Pencil marks as a 3x3 mini-grid, centered on the value
+                // spot. Marks for the selected digit stand out, to show
+                // where it can still go.
+                let note_style = Style::default().fg(NOTE).bg(bg);
+                let match_style = Style::default()
+                    .fg(ACCENT)
+                    .bg(bg)
+                    .add_modifier(Modifier::BOLD);
                 for d in 1..=9u8 {
                     if game.notes[i] & (1 << d) != 0 {
                         let k = u16::from(d - 1);
                         buf[(x + 1 + 2 * (k % 3), y + k / 3)]
                             .set_char(char::from(b'0' + d))
-                            .set_style(note_style);
+                            .set_style(if d == sel_val {
+                                match_style
+                            } else {
+                                note_style
+                            });
                     }
                 }
                 if game.notes[i] == 0 && is_sel {
                     buf[(x + CELL_W / 2, ym)]
                         .set_char('·')
-                        .set_style(Style::default().fg(Color::White).bg(bg));
+                        .set_style(Style::default().fg(BRIGHT).bg(bg));
                 }
             }
         }
     }
 
-    // Grid lines.
+    // Grid lines, on the board's own surface.
     for gy in 0..BOARD_H {
         for gx in 0..BOARD_W {
             if let Some((glyph, heavy)) = grid_glyph(gx, gy) {
-                buf[(ox + gx, oy + gy)].set_char(glyph).set_fg(if heavy {
-                    GRID_BOX
-                } else {
-                    GRID_THIN
-                });
+                buf[(ox + gx, oy + gy)]
+                    .set_char(glyph)
+                    .set_fg(if heavy { GRID_BOX } else { GRID_THIN })
+                    .set_bg(SURFACE);
             }
         }
     }
@@ -299,7 +374,7 @@ fn draw_board(
         let (x, _) = cell_screen(ox, oy, 0, c);
         buf[(x + CELL_W / 2, labels_y)]
             .set_char(char::from(b'1' + c as u8))
-            .set_fg(DIM);
+            .set_style(label(c == sel_c));
     }
 }
 
@@ -316,7 +391,7 @@ fn draw_button(frame: &mut Frame, rect: Rect, btn: &Button, hits: &mut Vec<Hit>)
     let border = if btn.active {
         Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(GRID_THIN)
+        Style::default().fg(LINE)
     };
     let block = Block::default()
         .borders(Borders::ALL)
@@ -332,10 +407,7 @@ fn draw_button(frame: &mut Frame, rect: Rect, btn: &Button, hits: &mut Vec<Hit>)
                 .fg(if btn.active { ACCENT } else { INK })
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            format!(" {}", btn.hint),
-            Style::default().fg(DIM).add_modifier(Modifier::DIM),
-        ),
+        Span::styled(format!(" {}", btn.hint), Style::default().fg(MUTED)),
     ]);
     frame.render_widget(Paragraph::new(line).alignment(Alignment::Center), inner);
 }
@@ -364,12 +436,11 @@ fn header_lines(game: &Game, best: Option<Duration>, width: u16) -> (Line<'stati
     let (done, total) = game.progress();
     let bar_w = 14;
     let filled = done * bar_w / total.max(1);
-    let bar: String = "█".repeat(filled) + &"░".repeat(bar_w - filled);
     let top = Line::from(vec![
         Span::styled(
             " TUDOKU ",
             Style::default()
-                .fg(Color::Black)
+                .fg(BG)
                 .bg(ACCENT)
                 .add_modifier(Modifier::BOLD),
         ),
@@ -380,9 +451,9 @@ fn header_lines(game: &Game, best: Option<Duration>, width: u16) -> (Line<'stati
         ),
         Span::styled(
             format!("{}   ", diff.blurb()),
-            Style::default().fg(DIM).add_modifier(Modifier::DIM),
+            Style::default().fg(MUTED).add_modifier(Modifier::ITALIC),
         ),
-        Span::styled(best_label(best), Style::default().fg(AMBER)),
+        Span::styled(best_label(best), Style::default().fg(PEN)),
     ]);
     let mut bottom = if game.completed {
         Line::from(vec![
@@ -392,50 +463,59 @@ fn header_lines(game: &Game, best: Option<Duration>, width: u16) -> (Line<'stati
             ),
             Span::styled(
                 format!("✖ {}   💡 {}   ", game.mistakes, game.hints_used),
-                Style::default().fg(DIM),
+                Style::default().fg(MUTED),
             ),
             Span::styled("N new puzzle · d change level", Style::default().fg(INK)),
         ])
     } else {
-        stats_line(game, done, total, &bar)
+        stats_line(game, done, total, filled, bar_w - filled)
     };
     // Transient messages go last, clipped visibly rather than mid-word.
     if let Some(msg) = game.message(Duration::from_secs(4)) {
         let room = usize::from(width).saturating_sub(bottom.width() + 3);
         bottom.push_span(Span::styled(
             format!("   {}", fit(msg, room)),
-            Style::default().fg(AMBER),
+            Style::default().fg(PEN),
         ));
     }
     (top, bottom)
 }
 
 /// Clock, mistakes, hints, progress and notes mode for a game in play.
-fn stats_line(game: &Game, done: usize, total: usize, bar: &str) -> Line<'static> {
+fn stats_line(
+    game: &Game,
+    done: usize,
+    total: usize,
+    filled: usize,
+    empty: usize,
+) -> Line<'static> {
+    // Notes mode changes what every digit key does, so when it is on it
+    // reads as a solid badge rather than one more word in the line.
+    let notes = if game.notes_mode {
+        Span::styled(
+            " ✎ NOTES ON ",
+            Style::default().fg(BG).bg(PEN).add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Span::styled("✎ notes off", Style::default().fg(MUTED))
+    };
     Line::from(vec![
         Span::styled(
             format!("⏱ {}  ", format_time(game.elapsed())),
-            Style::default().fg(INK),
+            Style::default().fg(INK).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             format!("✖ {}   ", game.mistakes),
-            Style::default().fg(if game.mistakes > 0 { RED } else { DIM }),
+            Style::default().fg(if game.mistakes > 0 { RED } else { MUTED }),
         ),
         Span::styled(
             format!("💡 {}   ", game.hints_used),
-            Style::default().fg(DIM),
+            Style::default().fg(MUTED),
         ),
-        Span::styled(format!("{bar} {done}/{total}   "), Style::default().fg(DIM)),
-        Span::styled(
-            if game.notes_mode {
-                "✎ NOTES ON"
-            } else {
-                "✎ notes off"
-            },
-            Style::default()
-                .fg(if game.notes_mode { AMBER } else { DIM })
-                .add_modifier(Modifier::BOLD),
-        ),
+        Span::styled("█".repeat(filled), Style::default().fg(ACCENT)),
+        Span::styled("█".repeat(empty), Style::default().fg(GRID_THIN)),
+        Span::styled(format!(" {done}/{total}   "), Style::default().fg(MUTED)),
+        notes,
     ])
 }
 
@@ -448,7 +528,7 @@ fn popup_block(title: &str) -> Block<'static> {
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(ACCENT))
-        .style(Style::default().bg(POPUP_BG))
+        .style(Style::default().bg(POPUP_BG).fg(INK))
 }
 
 /// Clear a centered `w`x`h` box, frame it, and return `(frame, content)`
@@ -486,7 +566,7 @@ fn draw_levels_menu(
     let mut lines: Vec<Line> = vec![
         Line::styled(
             " arrows/hjkl + Enter, keys 1-5, or click",
-            Style::default().fg(DIM).add_modifier(Modifier::DIM),
+            Style::default().fg(MUTED),
         ),
         Line::from(""),
     ];
@@ -518,7 +598,7 @@ fn draw_levels_menu(
         lines.push(Line::styled(
             format!("{text:<MENU_TEXT_W$}"),
             Style::default()
-                .fg(if sel { Color::White } else { INK })
+                .fg(if sel { BRIGHT } else { INK })
                 .bg(if sel { SEL_BG } else { POPUP_BG })
                 .add_modifier(Modifier::BOLD),
         ));
@@ -526,7 +606,7 @@ fn draw_levels_menu(
         push_hit(hits, hit, Some(action));
     }
     lines.push(Line::from(""));
-    lines.push(Line::styled(footer.to_string(), Style::default().fg(DIM)));
+    lines.push(Line::styled(footer.to_string(), Style::default().fg(MUTED)));
     frame.render_widget(Paragraph::new(lines), inner);
     r
 }
@@ -565,7 +645,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         " press Esc or click anywhere to close ",
-        Style::default().fg(DIM).add_modifier(Modifier::DIM),
+        Style::default().fg(MUTED),
     )));
     let (_, inner) = popup(frame, area, 56, lines.len() as u16 + 2, "How to play  (?)");
     frame.render_widget(Paragraph::new(lines), inner);
@@ -579,7 +659,7 @@ fn draw_paused(frame: &mut Frame, area: Rect) {
             Line::styled("board hidden, timer stopped", Style::default().fg(INK)),
             Line::styled(
                 "press p or click anywhere to resume",
-                Style::default().fg(DIM),
+                Style::default().fg(MUTED),
             ),
         ])
         .alignment(Alignment::Center),
@@ -594,15 +674,15 @@ fn draw_won(frame: &mut Frame, area: Rect, game: &Game, app: &App) -> (Rect, Rec
     let record = if app.new_best {
         Line::styled(
             "★ New best time! ★",
-            Style::default().fg(AMBER).add_modifier(Modifier::BOLD),
+            Style::default().fg(PEN).add_modifier(Modifier::BOLD),
         )
     } else if game.hints_used > 0 {
         Line::styled(
             "best times count hint-free solves only",
-            Style::default().fg(DIM),
+            Style::default().fg(MUTED),
         )
     } else {
-        Line::styled(best_label(best), Style::default().fg(DIM))
+        Line::styled(best_label(best), Style::default().fg(MUTED))
     };
     let lines = vec![
         Line::styled(
@@ -623,7 +703,7 @@ fn draw_won(frame: &mut Frame, area: Rect, game: &Game, app: &App) -> (Rect, Rec
         Line::from(""),
         Line::styled(
             "Enter new · d levels · Esc view board",
-            Style::default().fg(DIM),
+            Style::default().fg(MUTED),
         ),
     ];
     frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center), inner);
@@ -637,6 +717,7 @@ fn draw_won(frame: &mut Frame, area: Rect, game: &Game, app: &App) -> (Rect, Rec
         Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(LINE))
     };
     frame.render_widget(
         Paragraph::new(Line::styled(
@@ -670,7 +751,10 @@ fn draw_dealing(frame: &mut Frame, area: Rect, level: Difficulty) {
                 format!("{spin} shuffling a fresh {} puzzle", level.name()),
                 Style::default().fg(INK),
             ),
-            Line::styled("graded by technique, logic only", Style::default().fg(DIM)),
+            Line::styled(
+                "graded by technique, logic only",
+                Style::default().fg(MUTED),
+            ),
         ])
         .alignment(Alignment::Center),
         inner,
@@ -725,10 +809,13 @@ fn draw_title(frame: &mut Frame, area: Rect, app: &App, hits: &mut Vec<Hit>) {
     };
     let title = vec![
         Line::styled(
-            "TUDOKU",
+            "T U D O K U",
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         ),
-        Line::styled("offline sudoku for your terminal", Style::default().fg(DIM)),
+        Line::styled(
+            "offline sudoku for your terminal",
+            Style::default().fg(MUTED).add_modifier(Modifier::ITALIC),
+        ),
         Line::from(""),
         Line::styled(prompt, Style::default().fg(INK)),
     ];
@@ -745,6 +832,11 @@ fn draw_title(frame: &mut Frame, area: Rect, app: &App, hits: &mut Vec<Hit>) {
 fn draw_panel(frame: &mut Frame, game: &Game, x: u16, y: u16, hits: &mut Vec<Hit>) {
     // Number pad: 3x3 grid of digit buttons.
     let remaining = game.remaining();
+    let sel_val = if game.paused {
+        0
+    } else {
+        game.values[game.selected_idx()]
+    };
     for d in 1..=9u8 {
         let col = u16::from(d - 1) % 3;
         let row = u16::from(d - 1) / 3;
@@ -756,10 +848,18 @@ fn draw_panel(frame: &mut Frame, game: &Game, x: u16, y: u16, hits: &mut Vec<Hit
         );
         let left = remaining[usize::from(d)];
         let done = left == 0;
+        // The key for the selected cell's digit is lit, like its cells.
+        let border = if done {
+            Style::default().fg(GRID_THIN)
+        } else if d == sel_val {
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(LINE)
+        };
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(if done { GRID_THIN } else { ACCENT }));
+            .border_style(border);
         let inner = block.inner(r);
         frame.render_widget(block, r);
         push_hit(hits, r, Some(Action::Board(BoardAction::Digit(d))));
@@ -772,13 +872,11 @@ fn draw_panel(frame: &mut Frame, game: &Game, x: u16, y: u16, hits: &mut Vec<Hit
             Line::from(vec![
                 Span::styled(
                     format!("{d}"),
-                    Style::default().fg(INK).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(if d == sel_val { ACCENT } else { INK })
+                        .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled("·", Style::default().fg(DIM).add_modifier(Modifier::DIM)),
-                Span::styled(
-                    format!("{left}"),
-                    Style::default().fg(DIM).add_modifier(Modifier::DIM),
-                ),
+                Span::styled(format!(" {left}"), Style::default().fg(MUTED)),
             ])
         };
         frame.render_widget(Paragraph::new(label).alignment(Alignment::Center), inner);
@@ -877,10 +975,28 @@ fn draw_game(frame: &mut Frame, area: Rect, app: &App, game: &Game, hits: &mut V
     // Footer hints, directly under the board.
     let footer_y = oy + BOARD_H;
     if footer_y < area.bottom() {
-        let footer =
-            "arrows/hjkl  1-9 fill  n notes  u undo  H hint  e erase  d level  ? help  q quit";
+        let keys = [
+            ("arrows/hjkl", "move"),
+            ("1-9", "fill"),
+            ("n", "notes"),
+            ("u", "undo"),
+            ("H", "hint"),
+            ("e", "erase"),
+            ("d", "level"),
+            ("?", "help"),
+            ("q", "quit"),
+        ];
+        let footer: Vec<Span> = keys
+            .iter()
+            .flat_map(|&(k, what)| {
+                [
+                    Span::styled(k, Style::default().fg(INK).add_modifier(Modifier::BOLD)),
+                    Span::styled(format!(" {what}  "), Style::default().fg(MUTED)),
+                ]
+            })
+            .collect();
         frame.render_widget(
-            Paragraph::new(Line::styled(footer, Style::default().fg(DIM))),
+            Paragraph::new(Line::from(footer)),
             Rect::new(ox, footer_y, area.right() - ox, 1),
         );
     }
@@ -1099,7 +1215,8 @@ mod tests {
         // Board hidden while paused: the given 5 at (0,0) isn't drawn.
         assert_eq!(cell_row(&lines, 0, 0, 1), " ".repeat(usize::from(CELL_W)));
         let (lines, _) = draw(&app_with_game(), W, 50);
-        assert_eq!(cell_row(&lines, 0, 0, 1), "   5   ", "and is when unpaused");
+        let five = format!("  {}  ", HEAVY_DIGITS[4][1]);
+        assert_eq!(cell_row(&lines, 0, 0, 1), five, "and is when unpaused");
     }
 
     #[test]
@@ -1270,5 +1387,100 @@ mod tests {
         assert_eq!(oy, (90 - (3 + BOARD_H + 1)) / 2 + 3);
         let popup = centered_rect(area, 48, 13);
         assert!(popup.y > oy && popup.bottom() < oy + BOARD_H, "{popup:?}");
+    }
+
+    #[test]
+    fn givens_print_heavy_and_entries_light() {
+        let mut app = app_with_game();
+        let game = app.game.as_mut().unwrap();
+        // (0,2) is empty in the test puzzle, and its solution is 4.
+        game.set_selected(0, 2);
+        game.enter_digit(4);
+        let (lines, _) = draw(&app, W, 50);
+        for dy in 0..CELL_H {
+            let row = usize::from(dy);
+            let given = format!("  {}  ", HEAVY_DIGITS[2][row]);
+            let entry = format!("  {}  ", LIGHT_DIGITS[3][row]);
+            assert_eq!(cell_row(&lines, 0, 1, dy), given, "given 3");
+            assert_eq!(cell_row(&lines, 0, 2, dy), entry, "entered 4");
+        }
+    }
+
+    #[test]
+    fn every_digit_glyph_is_three_columns() {
+        for font in [&HEAVY_DIGITS, &LIGHT_DIGITS] {
+            for rows in font {
+                for row in rows {
+                    assert_eq!(Line::raw(*row).width(), 3, "{row:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn notes_for_the_selected_digit_stand_out() {
+        let mut app = app_with_game();
+        let game = app.game.as_mut().unwrap();
+        game.toggle_notes_mode();
+        game.set_selected(0, 3);
+        game.enter_digit(5);
+        game.enter_digit(6);
+        game.toggle_notes_mode();
+        game.set_selected(0, 0); // a given 5
+        let mut terminal = Terminal::new(TestBackend::new(W, 50)).unwrap();
+        terminal
+            .draw(|f| {
+                render(f, &app);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let (ox, oy) = board_origin(Rect::new(0, 0, W, 50));
+        let (x, y) = cell_screen(ox, oy, 0, 3);
+        let five = &buf[(x + 3, y + 1)];
+        let six = &buf[(x + 5, y + 1)];
+        assert_eq!((five.symbol(), six.symbol()), ("5", "6"));
+        assert_eq!(five.fg, ACCENT);
+        assert_eq!(six.fg, NOTE);
+    }
+
+    #[test]
+    fn nothing_falls_through_to_terminal_colors() {
+        // Every screen paints its own colors: the terminal's theme must
+        // never show through as a default foreground or background.
+        let mut app = app_with_game();
+        let game = app.game.as_mut().unwrap();
+        game.toggle_notes_mode();
+        game.enter_digit(1);
+        let mut screens = vec![app_with_game(), App::new(Store::none())];
+        for overlay in [Overlay::Help, Overlay::Won, Overlay::Levels { cursor: 0 }] {
+            let mut a = app_with_game();
+            a.overlays.push(overlay);
+            screens.push(a);
+        }
+        screens.push(app);
+        for (k, app) in screens.iter().enumerate() {
+            for (w, h) in [(W, 50), (40, 20)] {
+                let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+                terminal
+                    .draw(|f| {
+                        render(f, app);
+                    })
+                    .unwrap();
+                let buf = terminal.backend().buffer();
+                for y in 0..h {
+                    // The cell after a wide glyph is never drawn.
+                    let mut hidden = false;
+                    for x in 0..w {
+                        let cell = &buf[(x, y)];
+                        if !std::mem::take(&mut hidden) {
+                            assert_ne!(cell.bg, Color::Reset, "screen {k} at ({x},{y})");
+                            assert_ne!(cell.fg, Color::Reset, "screen {k} at ({x},{y})");
+                        }
+                        hidden = Line::raw(cell.symbol()).width() > 1;
+                        assert!(!cell.modifier.contains(Modifier::DIM), "screen {k}");
+                    }
+                }
+            }
+        }
     }
 }
