@@ -194,18 +194,17 @@ pub fn lesson(t: Technique) -> Lesson {
         },
         UniqueRectangle => Lesson {
             steps: &[
-                "Four rectangle corners in two boxes fit the same two digits. If all four held only them, they could swap: two solutions. A puzzle has one.",
-                "Floor corners fit only them; roofs more. Type 1: three floors, so the roof isn't either digit. Type 2: roofs share an extra digit, so one has it; cells seeing both can't.",
-                "Type 4: in a house the roofs share, a floor digit fits only in them. One has it; the other digit would let all four swap.",
+                "Four rectangle corners in two boxes fit the same two digits. Held only by them, they could swap: two solutions. A puzzle has one.",
+                "Floors fit only them; roofs more. Type 1: three floors, so the roof isn't either digit. Type 2: each roof has one extra digit, the same, so one roof is it; cells seeing both can't be it.",
+                "Type 4: a floor digit fits only in the roofs, in a house they share. So one is it, and neither is the other digit.",
             ],
             roles: ("roof", "floor"),
         },
         BugPlusOne => Lesson {
             steps: &[
                 "Look for a board where every empty cell fits two digits, except one that fits three.",
-                "Every digit fits exactly twice in each row, column and box, except one of that cell's digits: it fits three times in the cell's row, column and box.",
-                "Drop it from the cell, and every digit would fit exactly twice everywhere.",
-                "Such a grid has no solution or several, but a puzzle has one. So the cell is that digit.",
+                "Check every unplaced digit fits twice in each row, column and box, except one of that cell's digits: three times in its row, column and box.",
+                "Without that digit in the cell, all would fit twice: any solution could flip every cell to its other digit. A puzzle has one, so the cell is that digit.",
             ],
             roles: ("three-way cell", ""),
         },
