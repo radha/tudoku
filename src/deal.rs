@@ -96,11 +96,11 @@ impl Difficulty {
 pub fn level_of(t: Technique) -> Difficulty {
     use Technique::*;
     match t {
-        NakedSingle | HiddenSingle => Difficulty::Easy,
-        LockedCandidates | NakedPair | HiddenPair | NakedTriple | HiddenTriple => {
+        FullHouse | NakedSingle | HiddenSingle => Difficulty::Easy,
+        Pointing | Claiming | NakedPair | HiddenPair | NakedTriple | HiddenTriple => {
             Difficulty::Medium
         }
-        XWing | XYWing | NakedQuad | HiddenQuad => Difficulty::Hard,
+        NakedQuad | HiddenQuad | XWing | XYWing => Difficulty::Hard,
         Swordfish | XYZWing | Jellyfish => Difficulty::Master,
     }
 }

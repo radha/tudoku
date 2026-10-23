@@ -3,44 +3,53 @@
 //! The generator grades every puzzle by the hardest technique it needs, so
 //! a level means "how clever you have to be", not just "how many blanks".
 //! Hints use the same solver to find the cell a person could deduce next.
+//! Every step carries the pattern behind it and a reason in plain words,
+//! so it can be named, explained and drawn on the board.
+
+mod basic;
+mod fish;
+mod wings;
 
 use crate::sudoku::{
-    Board, CELLS, HOUSES, N, box_of_cell, candidates_mask, col_of, idx, peers, row_of,
+    ALL_DIGITS, Board, CELLS, HOUSES, N, box_of_cell, candidates_mask, col_of, peers, row_of,
 };
 
 /// Solving techniques, ordered from easiest to hardest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Technique {
+    FullHouse,
     NakedSingle,
     HiddenSingle,
-    LockedCandidates,
+    Pointing,
+    Claiming,
     NakedPair,
     HiddenPair,
     NakedTriple,
     HiddenTriple,
-    XWing,
-    XYWing,
     NakedQuad,
     HiddenQuad,
+    XWing,
+    XYWing,
     Swordfish,
     XYZWing,
     Jellyfish,
 }
 
 impl Technique {
-    #[allow(dead_code)] // the tutor uses this in a later step
     pub const ALL: &'static [Technique] = &[
+        Technique::FullHouse,
         Technique::NakedSingle,
         Technique::HiddenSingle,
-        Technique::LockedCandidates,
+        Technique::Pointing,
+        Technique::Claiming,
         Technique::NakedPair,
         Technique::HiddenPair,
         Technique::NakedTriple,
         Technique::HiddenTriple,
-        Technique::XWing,
-        Technique::XYWing,
         Technique::NakedQuad,
         Technique::HiddenQuad,
+        Technique::XWing,
+        Technique::XYWing,
         Technique::Swordfish,
         Technique::XYZWing,
         Technique::Jellyfish,
@@ -48,17 +57,19 @@ impl Technique {
 
     pub fn name(self) -> &'static str {
         match self {
+            Technique::FullHouse => "full house",
             Technique::NakedSingle => "naked single",
             Technique::HiddenSingle => "hidden single",
-            Technique::LockedCandidates => "locked candidates",
+            Technique::Pointing => "pointing",
+            Technique::Claiming => "claiming",
             Technique::NakedPair => "naked pair",
             Technique::HiddenPair => "hidden pair",
             Technique::NakedTriple => "naked triple",
             Technique::HiddenTriple => "hidden triple",
-            Technique::XWing => "X-Wing",
-            Technique::XYWing => "XY-Wing",
             Technique::NakedQuad => "naked quad",
             Technique::HiddenQuad => "hidden quad",
+            Technique::XWing => "X-Wing",
+            Technique::XYWing => "XY-Wing",
             Technique::Swordfish => "Swordfish",
             Technique::XYZWing => "XYZ-Wing",
             Technique::Jellyfish => "Jellyfish",
@@ -66,27 +77,102 @@ impl Technique {
     }
 }
 
-/// One deduction.
+/// What a step does to the board.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Step {
-    /// `digit` is the only possibility for `cell`.
-    Place {
-        cell: usize,
-        digit: u8,
-        technique: Technique,
-    },
+pub enum Effect {
+    /// `digit` goes in `cell`.
+    Place { cell: usize, digit: u8 },
     /// Each `(cell, mask)` loses the candidates in `mask`.
-    Eliminate {
-        technique: Technique,
-        removals: Vec<(usize, u16)>,
-    },
+    Eliminate(Vec<(usize, u16)>),
 }
 
-impl Step {
-    pub fn technique(&self) -> Technique {
-        match self {
-            Step::Place { technique, .. } | Step::Eliminate { technique, .. } => *technique,
-        }
+/// How a marked candidate is drawn: `Key` for the ones the step turns
+/// on, `Other` for the ones that support them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    Key,
+    Other,
+}
+
+/// One candidate a pattern points at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Mark {
+    pub cell: usize,
+    pub digit: u8,
+    pub role: Role,
+}
+
+/// `Strong`: if one end is false, the other is true. `Weak`: the two
+/// ends can't both be true.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkKind {
+    #[allow(dead_code)] // the chain techniques draw these
+    Strong,
+    Weak,
+}
+
+/// A line between two candidates, each a `(cell, digit)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Link {
+    pub from: (usize, u8),
+    pub to: (usize, u8),
+    pub kind: LinkKind,
+}
+
+/// What to show on the board to explain a step.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Pattern {
+    /// The one digit the pattern is about, if it is about one.
+    pub digit: Option<u8>,
+    /// For patterns on several digits, the cells whose notes stay visible.
+    pub cells: Vec<usize>,
+    /// Indexes into `HOUSES`, tinted on the board.
+    pub houses: Vec<usize>,
+    pub marks: Vec<Mark>,
+    pub links: Vec<Link>,
+}
+
+/// One deduction: what it does, the pattern behind it and why it holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Step {
+    pub technique: Technique,
+    pub effect: Effect,
+    pub pattern: Pattern,
+    pub why: String,
+}
+
+/// A cell as players name it: "r3c4".
+pub fn rc(cell: usize) -> String {
+    format!("r{}c{}", row_of(cell) + 1, col_of(cell) + 1)
+}
+
+/// A house as players name it: "row 3", "column 4" or "box 5".
+pub fn house_name(house: usize) -> String {
+    let kind = ["row", "column", "box"][house / N];
+    format!("{kind} {}", house % N + 1)
+}
+
+/// The digits in `mask`, smallest first: "7", "2 and 7", "1, 4 and 9".
+pub fn digit_list(mask: u16) -> String {
+    listing(bits(mask).map(|d| d.to_string()), "and")
+}
+
+/// The digits in `mask` as a choice: "2 or 7", "1, 4 or 9".
+fn digit_choice(mask: u16) -> String {
+    listing(bits(mask).map(|d| d.to_string()), "or")
+}
+
+/// Cells by name: "r1c2 and r1c5".
+fn cell_list(cells: &[usize]) -> String {
+    listing(cells.iter().map(|&c| rc(c)), "and")
+}
+
+/// `items` as an English list whose last two are joined by `last`.
+fn listing(items: impl IntoIterator<Item = String>, last: &str) -> String {
+    let items: Vec<String> = items.into_iter().collect();
+    match items.split_last() {
+        Some((tail, rest)) if !rest.is_empty() => format!("{} {last} {tail}", rest.join(", ")),
+        _ => items.concat(),
     }
 }
 
@@ -110,7 +196,8 @@ fn sees(a: usize, b: usize) -> bool {
     a != b && (row_of(a) == row_of(b) || col_of(a) == col_of(b) || box_of_cell(a) == box_of_cell(b))
 }
 
-/// A board plus the pencil marks a perfect note-taker would have.
+/// A board plus pencil marks: the ones a perfect note-taker would have,
+/// or ones someone noted by hand.
 #[derive(Debug, Clone)]
 pub struct Grid {
     values: Board,
@@ -118,15 +205,33 @@ pub struct Grid {
 }
 
 impl Grid {
-    pub fn new(values: &Board) -> Self {
-        let mut cands = [0; CELLS];
-        for i in (0..CELLS).filter(|&i| values[i] == 0) {
-            cands[i] = candidates_mask(values, i);
-        }
-        Self {
+    pub fn new(values: &Board) -> Grid {
+        let cands = std::array::from_fn(|i| candidates_mask(values, i));
+        Grid::with_candidates(values, &cands)
+    }
+
+    /// A board with the given candidates. Filled cells keep none.
+    pub fn with_candidates(values: &Board, cands: &[u16; CELLS]) -> Grid {
+        Grid {
             values: *values,
-            cands,
+            cands: std::array::from_fn(|i| {
+                if values[i] == 0 {
+                    cands[i] & ALL_DIGITS
+                } else {
+                    0
+                }
+            }),
         }
+    }
+
+    #[allow(dead_code)] // the tutor reads these
+    pub fn values(&self) -> &Board {
+        &self.values
+    }
+
+    #[allow(dead_code)] // the tutor reads these
+    pub fn cands(&self) -> &[u16; CELLS] {
+        &self.cands
     }
 
     pub fn is_solved(&self) -> bool {
@@ -139,15 +244,15 @@ impl Grid {
     }
 
     pub fn apply(&mut self, step: &Step) {
-        match *step {
-            Step::Place { cell, digit, .. } => {
+        match step.effect {
+            Effect::Place { cell, digit } => {
                 self.values[cell] = digit;
                 self.cands[cell] = 0;
                 for p in peers(cell) {
                     self.cands[p] &= !(1 << digit);
                 }
             }
-            Step::Eliminate { ref removals, .. } => {
+            Effect::Eliminate(ref removals) => {
                 for &(cell, mask) in removals {
                     self.cands[cell] &= !mask;
                 }
@@ -157,42 +262,71 @@ impl Grid {
 
     /// The easiest available deduction, if any technique finds one.
     pub fn next_step(&self) -> Option<Step> {
-        use Technique::*;
         if self.is_broken() {
             return None;
         }
-        self.naked_single()
-            .or_else(|| self.hidden_single())
-            .or_else(|| self.locked_candidates())
-            .or_else(|| self.naked_subset(2, NakedPair))
-            .or_else(|| self.hidden_subset(2, HiddenPair))
-            .or_else(|| self.naked_subset(3, NakedTriple))
-            .or_else(|| self.hidden_subset(3, HiddenTriple))
-            .or_else(|| self.fish(2, XWing))
-            .or_else(|| self.xy_wing())
-            .or_else(|| self.naked_subset(4, NakedQuad))
-            .or_else(|| self.hidden_subset(4, HiddenQuad))
-            .or_else(|| self.fish(3, Swordfish))
-            .or_else(|| self.xyz_wing())
-            .or_else(|| self.fish(4, Jellyfish))
+        Technique::ALL.iter().find_map(|&t| self.find(t))
     }
 
-    /// Remove `mask` from each of `cells`, or `None` if nothing changes.
-    fn eliminate(
+    /// The first deduction technique `t` finds, if any.
+    pub fn find(&self, t: Technique) -> Option<Step> {
+        use Technique::*;
+        match t {
+            FullHouse => self.full_house(),
+            NakedSingle => self.naked_single(),
+            HiddenSingle => self.hidden_single(),
+            Pointing => self.pointing(),
+            Claiming => self.claiming(),
+            NakedPair => self.naked_subset(2, t),
+            HiddenPair => self.hidden_subset(2, t),
+            NakedTriple => self.naked_subset(3, t),
+            HiddenTriple => self.hidden_subset(3, t),
+            NakedQuad => self.naked_subset(4, t),
+            HiddenQuad => self.hidden_subset(4, t),
+            XWing => self.fish(2, t),
+            XYWing => self.xy_wing(),
+            Swordfish => self.fish(3, t),
+            XYZWing => self.xyz_wing(),
+            Jellyfish => self.fish(4, t),
+        }
+    }
+
+    /// A step removing each `(cell, mask)`, cut down to the candidates
+    /// really there, or `None` if that leaves nothing to remove.
+    fn eliminating(
         &self,
         technique: Technique,
-        cells: impl IntoIterator<Item = usize>,
-        mask: u16,
+        removals: Vec<(usize, u16)>,
+        pattern: Pattern,
+        why: String,
     ) -> Option<Step> {
-        let removals: Vec<(usize, u16)> = cells
+        let removals: Vec<(usize, u16)> = removals
             .into_iter()
-            .filter(|&c| self.cands[c] & mask != 0)
-            .map(|c| (c, self.cands[c] & mask))
+            .map(|(c, mask)| (c, mask & self.cands[c]))
+            .filter(|&(_, mask)| mask != 0)
             .collect();
-        (!removals.is_empty()).then_some(Step::Eliminate {
+        (!removals.is_empty()).then_some(Step {
             technique,
-            removals,
+            effect: Effect::Eliminate(removals),
+            pattern,
+            why,
         })
+    }
+
+    fn placing(
+        &self,
+        technique: Technique,
+        cell: usize,
+        digit: u8,
+        pattern: Pattern,
+        why: String,
+    ) -> Step {
+        Step {
+            technique,
+            effect: Effect::Place { cell, digit },
+            pattern,
+            why,
+        }
     }
 
     /// Positions (0..9) within `house` whose cell has any of `mask`.
@@ -204,211 +338,30 @@ impl Grid {
             .fold(0, |m, (p, _)| m | 1 << p)
     }
 
-    fn naked_single(&self) -> Option<Step> {
-        let cell = (0..CELLS).find(|&i| self.cands[i].count_ones() == 1)?;
-        Some(Step::Place {
-            cell,
-            digit: self.cands[cell].trailing_zeros() as u8,
-            technique: Technique::NakedSingle,
-        })
-    }
-
-    fn hidden_single(&self) -> Option<Step> {
-        for house in &HOUSES {
-            for digit in 1..=9u8 {
-                let pos = self.positions(house, 1 << digit);
-                if pos.count_ones() == 1 {
-                    return Some(Step::Place {
-                        cell: usize::from(house[pos.trailing_zeros() as usize]),
-                        digit,
-                        technique: Technique::HiddenSingle,
-                    });
-                }
-            }
+    /// The two cells of house `house` where `digit` can go, if there are
+    /// exactly two.
+    #[allow(dead_code)] // the chain techniques build on this
+    fn conjugates(&self, house: usize, digit: u8) -> Option<(usize, usize)> {
+        let pos = self.positions(&HOUSES[house], 1 << digit);
+        if pos.count_ones() != 2 {
+            return None;
         }
-        None
+        let mut cells = bits(pos).map(|p| usize::from(HOUSES[house][p]));
+        Some((cells.next()?, cells.next()?))
     }
 
-    /// Pointing: a digit confined to one line within a box can't appear
-    /// elsewhere on that line. Claiming: a digit confined to one box within
-    /// a line can't appear elsewhere in that box.
-    fn locked_candidates(&self) -> Option<Step> {
-        for (h, house) in HOUSES.iter().enumerate() {
-            for digit in 1..=9u8 {
-                let bit = 1 << digit;
-                let cells: Vec<usize> = bits(self.positions(house, bit))
-                    .map(|p| usize::from(house[p]))
-                    .collect();
-                if cells.len() < 2 {
-                    continue;
-                }
-                let same = |f: fn(usize) -> usize| cells.iter().all(|&c| f(c) == f(cells[0]));
-                // The other houses all of these cells share.
-                let mut targets = Vec::new();
-                if h >= 2 * N {
-                    if same(row_of) {
-                        targets.push(row_of(cells[0]));
-                    }
-                    if same(col_of) {
-                        targets.push(N + col_of(cells[0]));
-                    }
-                } else if same(box_of_cell) {
-                    targets.push(2 * N + box_of_cell(cells[0]));
-                }
-                for t in targets {
-                    let outside = HOUSES[t]
-                        .iter()
-                        .map(|&c| usize::from(c))
-                        .filter(|c| !cells.contains(c));
-                    if let Some(step) = self.eliminate(Technique::LockedCandidates, outside, bit) {
-                        return Some(step);
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    /// `k` cells in a house whose candidates together are exactly `k`
-    /// digits: those digits can go nowhere else in the house.
-    fn naked_subset(&self, k: u32, technique: Technique) -> Option<Step> {
-        for house in &HOUSES {
-            let cell = |p: usize| usize::from(house[p]);
-            let eligible = (0..N)
-                .filter(|&p| (2..=k).contains(&self.cands[cell(p)].count_ones()))
-                .fold(0u16, |m, p| m | 1 << p);
-            for set in subsets(eligible, k) {
-                let union = bits(set).fold(0, |m, p| m | self.cands[cell(p)]);
-                if union.count_ones() != k {
-                    continue;
-                }
-                let others = (0..N).filter(|&p| set & 1 << p == 0).map(cell);
-                if let Some(step) = self.eliminate(technique, others, union) {
-                    return Some(step);
-                }
-            }
-        }
-        None
-    }
-
-    /// `k` digits that, within a house, fit only in the same `k` cells:
-    /// those cells can hold nothing else.
-    fn hidden_subset(&self, k: u32, technique: Technique) -> Option<Step> {
-        for house in &HOUSES {
-            let pos: [u16; 10] = std::array::from_fn(|d| {
-                if d == 0 {
-                    0
-                } else {
-                    self.positions(house, 1 << d)
-                }
-            });
-            let eligible = (1..=9)
-                .filter(|&d| (2..=k).contains(&pos[d].count_ones()))
-                .fold(0u16, |m, d| m | 1 << d);
-            for digits in subsets(eligible, k) {
-                let cells = bits(digits).fold(0, |m, d| m | pos[d]);
-                if cells.count_ones() != k {
-                    continue;
-                }
-                let removals: Vec<(usize, u16)> = bits(cells)
-                    .map(|p| usize::from(house[p]))
-                    .filter(|&c| self.cands[c] & !digits != 0)
-                    .map(|c| (c, self.cands[c] & !digits))
-                    .collect();
-                if !removals.is_empty() {
-                    return Some(Step::Eliminate {
-                        technique,
-                        removals,
-                    });
-                }
-            }
-        }
-        None
-    }
-
-    /// X-Wing (k=2), Swordfish (3), Jellyfish (4): a digit whose spots in
-    /// `k` rows fall in the same `k` columns must take those columns' only
-    /// spots, so it leaves the rest of each column. Same with rows and
-    /// columns swapped.
-    fn fish(&self, k: u32, technique: Technique) -> Option<Step> {
-        for digit in 1..=9u8 {
-            let bit = 1 << digit;
-            for base in [0, N] {
-                // For row houses a position is a column, and vice versa.
-                let lines: [u16; N] =
-                    std::array::from_fn(|l| self.positions(&HOUSES[base + l], bit));
-                let eligible = (0..N)
-                    .filter(|&l| (2..=k).contains(&lines[l].count_ones()))
-                    .fold(0u16, |m, l| m | 1 << l);
-                for set in subsets(eligible, k) {
-                    let cover = bits(set).fold(0, |m, l| m | lines[l]);
-                    if cover.count_ones() != k {
-                        continue;
-                    }
-                    let cells = bits(cover).flat_map(|c| {
-                        (0..N)
-                            .filter(move |&l| set & 1 << l == 0)
-                            .map(move |l| if base == 0 { idx(l, c) } else { idx(c, l) })
-                    });
-                    if let Some(step) = self.eliminate(technique, cells, bit) {
-                        return Some(step);
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    /// Pivot {x,y} sees pincers {x,z} and {y,z}: whichever value the pivot
-    /// takes, one pincer is z, so cells seeing both pincers can't be z.
-    fn xy_wing(&self) -> Option<Step> {
-        for pivot in (0..CELLS).filter(|&i| self.cands[i].count_ones() == 2) {
-            let pc = self.cands[pivot];
-            let wings: Vec<usize> = peers(pivot)
-                .filter(|&p| {
-                    self.cands[p].count_ones() == 2 && (self.cands[p] & pc).count_ones() == 1
+    /// A mark for each candidate in `mask` that `cells` hold.
+    fn marks(&self, cells: impl IntoIterator<Item = usize>, mask: u16, role: Role) -> Vec<Mark> {
+        cells
+            .into_iter()
+            .flat_map(|cell| {
+                bits(self.cands[cell] & mask).map(move |d| Mark {
+                    cell,
+                    digit: d as u8,
+                    role,
                 })
-                .collect();
-            for (n, &a) in wings.iter().enumerate() {
-                for &b in &wings[n + 1..] {
-                    let (ca, cb) = (self.cands[a], self.cands[b]);
-                    let z = ca & cb & !pc;
-                    if z.count_ones() != 1 || ca & pc == cb & pc {
-                        continue;
-                    }
-                    let targets = peers(a).filter(|&c| sees(c, b));
-                    if let Some(step) = self.eliminate(Technique::XYWing, targets, z) {
-                        return Some(step);
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    /// Pivot {x,y,z} sees pincers {x,z} and {y,z}: one of the three is z,
-    /// so cells seeing all three can't be z.
-    fn xyz_wing(&self) -> Option<Step> {
-        for pivot in (0..CELLS).filter(|&i| self.cands[i].count_ones() == 3) {
-            let pc = self.cands[pivot];
-            let wings: Vec<usize> = peers(pivot)
-                .filter(|&p| self.cands[p].count_ones() == 2 && self.cands[p] & !pc == 0)
-                .collect();
-            for (n, &a) in wings.iter().enumerate() {
-                for &b in &wings[n + 1..] {
-                    let (ca, cb) = (self.cands[a], self.cands[b]);
-                    let z = ca & cb;
-                    if z.count_ones() != 1 || ca | cb != pc {
-                        continue;
-                    }
-                    let targets = peers(pivot).filter(|&c| sees(c, a) && sees(c, b));
-                    if let Some(step) = self.eliminate(Technique::XYZWing, targets, z) {
-                        return Some(step);
-                    }
-                }
-            }
-        }
-        None
+            })
+            .collect()
     }
 }
 
@@ -426,12 +379,12 @@ pub struct Grade {
 pub fn grade(puzzle: &Board) -> Option<Grade> {
     let mut grid = Grid::new(puzzle);
     let mut grade = Grade {
-        hardest: Technique::NakedSingle,
+        hardest: Technique::FullHouse,
         steps: 0,
     };
     while !grid.is_solved() {
         let step = grid.next_step()?;
-        grade.hardest = grade.hardest.max(step.technique());
+        grade.hardest = grade.hardest.max(step.technique);
         grade.steps += 1;
         grid.apply(&step);
     }
@@ -442,11 +395,11 @@ pub fn grade(puzzle: &Board) -> Option<Grade> {
 /// digit and the hardest technique needed to get there.
 pub fn next_placement(values: &Board) -> Option<(usize, u8, Technique)> {
     let mut grid = Grid::new(values);
-    let mut hardest = Technique::NakedSingle;
+    let mut hardest = Technique::FullHouse;
     loop {
         let step = grid.next_step()?;
-        hardest = hardest.max(step.technique());
-        if let Step::Place { cell, digit, .. } = step {
+        hardest = hardest.max(step.technique);
+        if let Effect::Place { cell, digit } = step.effect {
             return Some((cell, digit, hardest));
         }
         grid.apply(&step);
@@ -454,14 +407,11 @@ pub fn next_placement(values: &Board) -> Option<(usize, u8, Technique)> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod testing {
     use super::*;
-    use crate::sudoku::{self, parse_board, test_board};
-    use rand::SeedableRng;
-    use rand::rngs::StdRng;
 
     /// A grid whose candidates are set by hand, to stage one pattern.
-    fn staged(cands: &[(usize, &[u8])]) -> Grid {
+    pub fn staged(cands: &[(usize, &[u8])]) -> Grid {
         // Fill every cell with a dummy value, then open the staged ones:
         // the techniques only look at candidate masks.
         let mut grid = Grid {
@@ -475,15 +425,28 @@ mod tests {
         grid
     }
 
-    fn removals(step: Option<Step>) -> Vec<(usize, u16)> {
+    /// The removals of an elimination step, sorted.
+    pub fn removals(step: Option<Step>) -> Vec<(usize, u16)> {
         match step {
-            Some(Step::Eliminate { mut removals, .. }) => {
+            Some(Step {
+                effect: Effect::Eliminate(mut removals),
+                ..
+            }) => {
                 removals.sort_unstable();
                 removals
             }
             other => panic!("expected an elimination, got {other:?}"),
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::testing::staged;
+    use super::*;
+    use crate::sudoku::{self, idx, parse_board, test_board};
+    use rand::SeedableRng;
+    use rand::rngs::StdRng;
 
     #[test]
     fn subsets_and_bits() {
@@ -492,6 +455,70 @@ mod tests {
             [0b0011, 0b1001, 0b1010]
         );
         assert_eq!(bits(0b1010_0001).collect::<Vec<_>>(), [0, 5, 7]);
+    }
+
+    #[test]
+    fn names_read_the_way_players_count() {
+        assert_eq!(rc(idx(2, 3)), "r3c4");
+        assert_eq!(house_name(2), "row 3");
+        assert_eq!(house_name(N + 3), "column 4");
+        assert_eq!(house_name(2 * N + 4), "box 5");
+        assert_eq!(digit_list(1 << 7), "7");
+        assert_eq!(digit_list((1 << 2) | (1 << 7)), "2 and 7");
+        assert_eq!(digit_list((1 << 1) | (1 << 4) | (1 << 9)), "1, 4 and 9");
+    }
+
+    #[test]
+    fn technique_list_is_complete() {
+        // ALL lists every variant in declaration order with no gaps, so the
+        // derived Ord (easiest first) agrees with it.
+        for (i, &t) in Technique::ALL.iter().enumerate() {
+            assert_eq!(t as usize, i, "{t:?}");
+        }
+        assert_eq!(*Technique::ALL.last().unwrap(), Technique::Jellyfish);
+    }
+
+    #[test]
+    fn find_runs_only_the_asked_technique() {
+        let (p, _) = test_board();
+        let g = Grid::new(&p);
+        for &t in Technique::ALL {
+            assert!(g.find(t).is_none_or(|s| s.technique == t), "{t:?}");
+        }
+        let s = g.next_step().unwrap();
+        assert_eq!(g.find(s.technique), Some(s));
+    }
+
+    #[test]
+    fn full_house_fills_the_last_cell_of_a_house() {
+        let (_, s) = test_board();
+        let mut b = s;
+        b[0] = 0;
+        let step = Grid::new(&b).find(Technique::FullHouse).unwrap();
+        assert_eq!(
+            step.effect,
+            Effect::Place {
+                cell: 0,
+                digit: s[0]
+            }
+        );
+        assert_eq!(
+            step.why,
+            format!("r1c1 is the last empty cell in row 1, so it's a {}.", s[0])
+        );
+    }
+
+    #[test]
+    fn conjugates_need_exactly_two_spots() {
+        let grid = staged(&[
+            (idx(0, 1), &[3, 4]),
+            (idx(0, 6), &[3, 5]),
+            (idx(4, 1), &[3, 4]),
+            (idx(7, 1), &[3, 6]),
+        ]);
+        assert_eq!(grid.conjugates(0, 3), Some((idx(0, 1), idx(0, 6))));
+        assert_eq!(grid.conjugates(N + 1, 3), None, "three spots");
+        assert_eq!(grid.conjugates(0, 5), None, "one spot");
     }
 
     #[test]
@@ -517,7 +544,7 @@ mod tests {
         .unwrap();
         let s = sudoku::solve_one(&p).unwrap();
         let mut board = p;
-        let mut hardest_seen = Technique::NakedSingle;
+        let mut hardest_seen = Technique::FullHouse;
         while let Some((cell, digit, technique)) = next_placement(&board) {
             assert_eq!(s[cell], digit);
             hardest_seen = hardest_seen.max(technique);
@@ -525,103 +552,6 @@ mod tests {
         }
         assert_eq!(board, s, "placements alone finish the puzzle");
         assert_eq!(hardest_seen, Technique::XYWing);
-    }
-
-    #[test]
-    fn pointing_pair_clears_the_rest_of_the_row() {
-        // 5 fits box 0 only in row 0, so it leaves row 0 outside box 0.
-        let grid = staged(&[
-            (idx(0, 0), &[5, 6]),
-            (idx(0, 1), &[5, 7]),
-            (idx(1, 0), &[6, 7]),
-            (idx(0, 5), &[5, 8]),
-        ]);
-        let got = removals(grid.locked_candidates());
-        assert_eq!(got, [(idx(0, 5), 1 << 5)]);
-    }
-
-    #[test]
-    fn naked_pair_clears_its_house() {
-        let grid = staged(&[
-            (idx(4, 0), &[2, 7]),
-            (idx(4, 3), &[2, 7]),
-            (idx(4, 8), &[2, 3, 7]),
-        ]);
-        let got = removals(grid.naked_subset(2, Technique::NakedPair));
-        assert_eq!(got, [(idx(4, 8), (1 << 2) | (1 << 7))]);
-    }
-
-    #[test]
-    fn hidden_pair_strips_other_candidates() {
-        // In row 2, 1 and 9 only fit columns 0 and 4.
-        let grid = staged(&[
-            (idx(2, 0), &[1, 4, 9]),
-            (idx(2, 4), &[1, 6, 9]),
-            (idx(2, 7), &[4, 6]),
-        ]);
-        let got = removals(grid.hidden_subset(2, Technique::HiddenPair));
-        assert_eq!(got, [(idx(2, 0), 1 << 4), (idx(2, 4), 1 << 6)]);
-    }
-
-    #[test]
-    fn x_wing_clears_its_columns() {
-        // 3 sits only in columns 1 and 7 of rows 1 and 6.
-        let grid = staged(&[
-            (idx(1, 1), &[3, 4]),
-            (idx(1, 7), &[3, 5]),
-            (idx(6, 1), &[3, 6]),
-            (idx(6, 7), &[3, 8]),
-            (idx(4, 7), &[3, 9]),
-        ]);
-        let got = removals(grid.fish(2, Technique::XWing));
-        assert_eq!(got, [(idx(4, 7), 1 << 3)]);
-    }
-
-    #[test]
-    fn xy_wing_clears_the_shared_digit() {
-        // Pivot (0,0)={1,2}; pincers (0,5)={1,3} and (4,0)={2,3}.
-        // (4,5) sees both pincers, so it can't be 3.
-        let grid = staged(&[
-            (idx(0, 0), &[1, 2]),
-            (idx(0, 5), &[1, 3]),
-            (idx(4, 0), &[2, 3]),
-            (idx(4, 5), &[3, 7]),
-        ]);
-        let got = removals(grid.xy_wing());
-        assert_eq!(got, [(idx(4, 5), 1 << 3)]);
-    }
-
-    #[test]
-    fn xyz_wing_clears_cells_seeing_all_three() {
-        // Pivot (0,1)={1,2,3}; pincers (0,7)={1,3} and (1,0)={2,3}.
-        // (0,0) and (0,2) see all three, so they can't be 3.
-        let grid = staged(&[
-            (idx(0, 1), &[1, 2, 3]),
-            (idx(0, 7), &[1, 3]),
-            (idx(1, 0), &[2, 3]),
-            (idx(0, 0), &[3, 5]),
-            (idx(0, 2), &[3, 6]),
-            (idx(0, 4), &[3, 8]),
-        ]);
-        let got = removals(grid.xyz_wing());
-        assert_eq!(got, [(idx(0, 0), 1 << 3), (idx(0, 2), 1 << 3)]);
-    }
-
-    #[test]
-    fn swordfish_clears_its_columns() {
-        // 4 sits only in columns {0,3,6} across rows 0, 4 and 8.
-        let grid = staged(&[
-            (idx(0, 0), &[4, 1]),
-            (idx(0, 3), &[4, 2]),
-            (idx(4, 3), &[4, 5]),
-            (idx(4, 6), &[4, 6]),
-            (idx(8, 0), &[4, 7]),
-            (idx(8, 6), &[4, 8]),
-            (idx(2, 6), &[4, 9]),
-        ]);
-        assert_eq!(grid.fish(2, Technique::XWing), None);
-        let got = removals(grid.fish(3, Technique::Swordfish));
-        assert_eq!(got, [(idx(2, 6), 1 << 4)]);
     }
 
     #[test]
@@ -646,34 +576,110 @@ mod tests {
         }
     }
 
-    /// Every deduction on random puzzles must agree with the real solution:
-    /// placements match it and eliminations never remove its digit.
-    #[test]
-    fn deductions_never_contradict_the_solution() {
+    /// Walk 20 seeded minimal puzzles, including ones logic alone can't
+    /// finish, calling `visit` at every state with the step `next_step`
+    /// takes there and the puzzle's solution.
+    fn dealt_states(mut visit: impl FnMut(&Grid, &Step, &Board)) {
         let mut rng = StdRng::seed_from_u64(99);
-        for _ in 0..60 {
-            // Minimal puzzles, including ones logic alone can't finish.
+        for _ in 0..20 {
             let solution = sudoku::full_solution(&mut rng);
             let puzzle = sudoku::dig(&solution, CELLS, &mut rng);
             let mut grid = Grid::new(&puzzle);
             while let Some(step) = grid.next_step() {
-                match &step {
-                    Step::Place { cell, digit, .. } => assert_eq!(solution[*cell], *digit),
-                    Step::Eliminate {
-                        removals,
-                        technique,
-                    } => {
-                        for &(cell, mask) in removals {
+                visit(&grid, &step, &solution);
+                grid.apply(&step);
+            }
+        }
+    }
+
+    /// Every detector, run at every state of the dealt puzzles, must agree
+    /// with the real solution: placements match it and eliminations never
+    /// remove its digit.
+    #[test]
+    fn every_detector_is_sound_on_dealt_puzzles() {
+        let mut found = [0; Technique::ALL.len()];
+        dealt_states(|grid, _, solution| {
+            for &t in Technique::ALL {
+                let Some(step) = grid.find(t) else { continue };
+                assert_eq!(step.technique, t);
+                found[t as usize] += 1;
+                match step.effect {
+                    Effect::Place { cell, digit } => {
+                        assert_eq!(
+                            solution[cell],
+                            digit,
+                            "{t:?} placed {digit} at {}",
+                            rc(cell)
+                        );
+                    }
+                    Effect::Eliminate(removals) => {
+                        for (cell, mask) in removals {
                             assert_eq!(
                                 mask & (1 << solution[cell]),
                                 0,
-                                "{technique:?} removed the answer at {cell}"
+                                "{t:?} removed the answer at {}",
+                                rc(cell)
                             );
                         }
                     }
                 }
-                grid.apply(&step);
             }
+        });
+        // The run reaches well past the singles.
+        use Technique::*;
+        for t in [Pointing, Claiming, HiddenQuad, XWing, XYZWing, Jellyfish] {
+            assert!(found[t as usize] > 0, "{t:?} never fired: {found:?}");
         }
+    }
+
+    /// Every step's pattern points at the board as it stood before the step.
+    #[test]
+    fn patterns_are_consistent() {
+        dealt_states(|g, step, _| {
+            let (t, p) = (step.technique, &step.pattern);
+            let removals: &[(usize, u16)] = match &step.effect {
+                Effect::Place { cell, .. } => {
+                    assert_eq!(g.values[*cell], 0, "{t:?} places on a filled cell");
+                    &[]
+                }
+                Effect::Eliminate(removals) => removals,
+            };
+            let marked = |cell, digit| p.marks.iter().any(|m| (m.cell, m.digit) == (cell, digit));
+            let removed = |cell, digit: u8| {
+                removals
+                    .iter()
+                    .any(|&(c, mask)| c == cell && mask & (1 << digit) != 0)
+            };
+            for m in &p.marks {
+                assert_eq!(g.values[m.cell], 0, "{t:?} marks filled {}", rc(m.cell));
+                assert_ne!(
+                    g.cands[m.cell] & (1 << m.digit),
+                    0,
+                    "{t:?} marks a non-candidate"
+                );
+            }
+            for l in &p.links {
+                for (cell, digit) in [l.from, l.to] {
+                    assert!(marked(cell, digit) || removed(cell, digit), "{t:?}: {l:?}");
+                }
+            }
+            for &(cell, mask) in removals {
+                assert_ne!(mask, 0, "{t:?} removes nothing at {}", rc(cell));
+                assert_eq!(mask & !g.cands[cell], 0, "{t:?} removes a non-candidate");
+                for d in bits(mask) {
+                    assert!(!marked(cell, d as u8), "{t:?} removes its own mark");
+                }
+            }
+            if let Some(d) = p.digit {
+                assert!(p.marks.iter().all(|m| m.digit == d), "{t:?}");
+                assert!(removals.iter().all(|&(_, mask)| mask == 1 << d), "{t:?}");
+                if let Effect::Place { digit, .. } = step.effect {
+                    assert_eq!(digit, d, "{t:?}");
+                }
+            }
+            assert!(p.houses.iter().all(|&h| h < HOUSES.len()), "{t:?}");
+            assert!(p.cells.iter().all(|&c| g.values[c] == 0), "{t:?}");
+            assert!(!step.why.is_empty(), "{t:?}");
+        });
     }
 }
