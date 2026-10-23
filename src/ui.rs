@@ -597,7 +597,9 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         ("Notes", "n toggles pencil marks, then 1-9"),
         ("Erase", "0 / x / e / Backspace / Delete"),
         ("Undo", "u  or Ctrl+Z"),
-        ("Tutor", "t — names a strategy; t again explains it"),
+        ("Tutor", "t names a strategy; t again explains it;"),
+        ("", "t once more shows it on your board"),
+        ("", "a does it for me  •  Esc closes the tutor"),
         ("New", "N (capital) — fresh puzzle, same level"),
         ("Level", "d — change difficulty"),
         ("Pause", "p, or switch windows — stops the clock"),
@@ -1365,10 +1367,17 @@ mod tests {
     fn help_popup_lists_controls() {
         let mut app = app_with_game();
         app.overlays.push(Overlay::Help);
-        let (lines, _) = draw(&app, W, 50);
+        let (lines, _) = draw(&app, MIN_W, MIN_H);
         let screen = text(&lines);
         assert!(screen.contains("How to play"));
-        assert!(screen.contains("Tutor"));
+        // The tutor: `t` three times, `a`, and Esc, each line whole.
+        for want in [
+            "│  Tutor  t names a strategy; t again explains it;",
+            "│         t once more shows it on your board",
+            "│         a does it for me  •  Esc closes the tutor",
+        ] {
+            assert!(screen.contains(want), "{want}\n{screen}");
+        }
     }
 
     #[test]
