@@ -5,11 +5,12 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::deal::Difficulty;
-use crate::logic::{self, Technique};
+use crate::logic::{self, Effect, Step, Technique};
 use crate::sudoku::{
     ALL_DIGITS, Board, CELLS, col_of, format_board, idx, is_unique, parse_board, peers, row_of,
     solve_one,
 };
+use crate::tutor::NoteMode;
 
 /// Snapshot of one cell (plus auto-removed peer notes) for undo.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -325,6 +326,58 @@ impl Game {
         self.mark_finished_if_done();
     }
 
+    /// Apply the tutor's step. A placement goes in the way a correct entry
+    /// does; an elimination crosses candidates out of the notes, which only
+    /// makes sense when the notes are full candidates. One undo entry
+    /// covers the whole step. False means nothing was applied.
+    #[allow(dead_code)] // the tutor pane calls this once it is wired in
+    pub fn apply_step(&mut self, step: &Step, mode: NoteMode) -> bool {
+        if self.completed || self.paused {
+            return false;
+        }
+        match &step.effect {
+            Effect::Place { cell, digit } => {
+                self.place_correct(*cell, *digit);
+                true
+            }
+            Effect::Eliminate(removals) => {
+                let Some(&(first, _)) = removals.first() else {
+                    return false;
+                };
+                if mode != NoteMode::Full {
+                    return false;
+                }
+                let others = removals[1..]
+                    .iter()
+                    .map(|&(cell, _)| (cell, self.notes[cell]))
+                    .collect();
+                self.push_undo(first, others);
+                for &(cell, mask) in removals {
+                    self.notes[cell] &= !mask;
+                }
+                true
+            }
+        }
+    }
+
+    /// Place the right digit in `cell`, as the tutor's "put it in for me".
+    #[allow(dead_code)] // the tutor pane calls this once it is wired in
+    pub fn place_answer(&mut self, cell: usize) {
+        if self.completed || self.paused {
+            return;
+        }
+        self.place_correct(cell, self.solution[cell]);
+    }
+
+    fn place_correct(&mut self, cell: usize, digit: u8) {
+        self.select_cell(cell);
+        let peers = self.clear_peer_notes(cell, digit);
+        self.push_undo(cell, peers);
+        self.values[cell] = digit;
+        self.notes[cell] = 0;
+        self.mark_finished_if_done();
+    }
+
     /// The board with wrong entries blanked: what logic may build on.
     fn correct_values(&self) -> Board {
         std::array::from_fn(|i| {
@@ -457,6 +510,75 @@ mod tests {
     fn test_game() -> Game {
         let (p, s) = test_board();
         Game::new(Difficulty::Easy, p, s)
+    }
+
+    #[test]
+    fn apply_step_places_a_single_and_clears_peer_notes() {
+        let mut g = test_game();
+        let cell = (0..CELLS).find(|&i| g.values[i] == 0).unwrap();
+        let digit = g.solution[cell];
+        let peer = peers(cell).find(|&p| g.values[p] == 0).unwrap();
+        g.notes[peer] = 1 << digit | 1 << (digit % 9 + 1);
+        let before = g.notes[peer];
+        let step = Step {
+            technique: Technique::NakedSingle,
+            effect: Effect::Place { cell, digit },
+            pattern: Default::default(),
+            why: String::new(),
+        };
+        assert!(g.apply_step(&step, NoteMode::PairMarks));
+        assert_eq!(g.values[cell], digit);
+        assert_eq!(g.notes[peer], before & !(1 << digit));
+        assert_eq!(g.selected_idx(), cell);
+        g.undo();
+        assert_eq!(g.values[cell], 0);
+        assert_eq!(g.notes[peer], before);
+    }
+
+    #[test]
+    fn apply_step_removes_notes_in_full_mode_and_one_undo_restores_them() {
+        let mut g = test_game();
+        let cells: Vec<usize> = (0..CELLS).filter(|&i| g.values[i] == 0).take(2).collect();
+        g.notes[cells[0]] = 0b110;
+        g.notes[cells[1]] = 0b1100;
+        let step = Step {
+            technique: Technique::Pointing,
+            effect: Effect::Eliminate(vec![(cells[0], 0b10), (cells[1], 0b100)]),
+            pattern: Default::default(),
+            why: String::new(),
+        };
+        assert!(g.apply_step(&step, NoteMode::Full));
+        assert_eq!((g.notes[cells[0]], g.notes[cells[1]]), (0b100, 0b1000));
+        g.undo();
+        assert_eq!((g.notes[cells[0]], g.notes[cells[1]]), (0b110, 0b1100));
+    }
+
+    #[test]
+    fn place_answer_enters_the_solution_digit_and_undoes() {
+        let mut g = test_game();
+        let cell = (0..CELLS).find(|&i| g.values[i] == 0).unwrap();
+        g.place_answer(cell);
+        assert_eq!(g.values[cell], g.solution[cell]);
+        assert_eq!(g.mistakes, 0);
+        g.undo();
+        assert_eq!(g.values[cell], 0);
+    }
+
+    #[test]
+    fn apply_step_refuses_eliminations_in_pair_mark_mode() {
+        let mut g = test_game();
+        let cell = (0..CELLS).find(|&i| g.values[i] == 0).unwrap();
+        g.notes[cell] = 0b110;
+        let step = Step {
+            technique: Technique::Pointing,
+            effect: Effect::Eliminate(vec![(cell, 0b10)]),
+            pattern: Default::default(),
+            why: String::new(),
+        };
+        assert!(!g.apply_step(&step, NoteMode::PairMarks));
+        assert_eq!(g.notes[cell], 0b110);
+        g.undo();
+        assert_eq!(g.notes[cell], 0b110);
     }
 
     #[test]

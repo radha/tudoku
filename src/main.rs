@@ -10,6 +10,7 @@ mod game;
 mod logic;
 mod store;
 mod sudoku;
+mod tutor;
 mod ui;
 
 use std::io::{self, IsTerminal, Stdout};
