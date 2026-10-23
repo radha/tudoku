@@ -226,9 +226,8 @@ impl Grid {
     fn als_xz_step(&self, a: &Als, b: &Als, x: usize, z: usize, targets: Cells) -> Option<Step> {
         let targets: Vec<usize> = cells_in(targets).collect();
         let why = format!(
-            "Each set fits one more digit than it has cells: A = {}; B = {}. Every {x} in A \
-             sees every {x} in B, so at least one set has no {x}, and its cells take all its \
-             other digits, {z} included. So A or B holds {z}, and {}",
+            "A = {}; B = {}. Every {x} in A sees every {x} in B, so at least one set has no \
+             {x} and holds all its other digits. So A or B holds {z}, and {}",
             a.describe(),
             b.describe(),
             conclusion(&targets, z),
@@ -312,11 +311,9 @@ impl Grid {
     ) -> Option<Step> {
         let targets: Vec<usize> = cells_in(targets).collect();
         let why = format!(
-            "Each set fits one more digit than it has cells: A = {}; B = {}; C = {}. C misses \
-             at most one of its digits, so it holds {x} or {y}. Every {x} in C sees every {x} \
-             in A, and every {y} in C every {y} in B. If C holds {x}, A has no {x}, so its \
-             cells take all its other digits, {z} included; if {y}, the same goes for B. So A \
-             or B holds {z}, and {}",
+            "A = {}; B = {}; C = {}. C holds {x} or {y}. Every {x} in C sees every {x} in A, \
+             and every {y} in C every {y} in B, so A has no {x} or B has no {y}, and that set \
+             holds all its other digits. So A or B holds {z}, and {}",
             a.describe(),
             b.describe(),
             c.describe(),
@@ -439,10 +436,9 @@ impl Grid {
             format!(", and {} in the shared ones", digit_list(rest))
         };
         let why = format!(
-            "{} fit only {}. With {} ({}) and {} ({}), that's {count} cells for {count} digits, \
-             and no two can match (each two share a house or no digit), so each digit is in \
-             one of them. So {} are in the {} cells among them, {}{} in the {} cells{rest_part}. \
-             So {cuts}.",
+            "{} fit only {}. With {} ({}) and {} ({}), these {count} cells hold the {count} \
+             digits once each: {} in their {} cells, {}{} in their {} cells{rest_part}. So \
+             {cuts}.",
             cell_list(core),
             digit_list(digits),
             rc(l),
@@ -536,9 +532,8 @@ impl Grid {
             })
             .collect();
         let why = format!(
-            "{} is {}. Each petal fits one more digit than it has cells: {}. Whichever digit \
-             {} is, its petal has none of it, so the petal's cells take all its other digits, \
-             {z} included. So one of the petals holds {z}, and {}",
+            "{} is {}. Petals: {}. Whichever digit {} is, its petal has none of it and holds \
+             all its other digits. So one of the petals holds {z}, and {}",
             rc(stem),
             digit_choice(stem_digits),
             described.join("; "),
@@ -661,10 +656,9 @@ mod tests {
         assert_eq!(pattern.links, [weak((idx(0, 1), 3), (idx(4, 1), 3))]);
         assert_eq!(
             step.why,
-            "Each set fits one more digit than it has cells: A = r1c1, r1c2 (1, 2, 3); \
-             B = r5c2, r5c5 (1, 3, 5). Every 3 in A sees every 3 in B, so at least one \
-             set has no 3, and its cells take all its other digits, 1 included. So A or B \
-             holds 1, and r1c5 sees every 1 in them, so it can't be 1."
+            "A = r1c1, r1c2 (1, 2, 3); B = r5c2, r5c5 (1, 3, 5). Every 3 in A sees every \
+             3 in B, so at least one set has no 3 and holds all its other digits. So A or \
+             B holds 1, and r1c5 sees every 1 in them, so it can't be 1."
         );
         assert_eq!(removals(Some(step)), [(idx(0, 4), 1 << 1)]);
     }
@@ -740,12 +734,10 @@ mod tests {
         );
         assert_eq!(
             step.why,
-            "Each set fits one more digit than it has cells: A = r2c3, r3c3 (1, 4, 9); \
-             B = r1c5, r1c6 (2, 6, 9); C = r1c1, r1c2 (1, 2, 5). C misses at most one \
-             of its digits, so it holds 1 or 2. Every 1 in C sees every 1 in A, and \
-             every 2 in C every 2 in B. If C holds 1, A has no 1, so its cells take all \
-             its other digits, 9 included; if 2, the same goes for B. So A or B holds 9, \
-             and r1c3 sees every 9 in them, so it can't be 9."
+            "A = r2c3, r3c3 (1, 4, 9); B = r1c5, r1c6 (2, 6, 9); C = r1c1, r1c2 (1, 2, 5). \
+             C holds 1 or 2. Every 1 in C sees every 1 in A, and every 2 in C every 2 in \
+             B, so A has no 1 or B has no 2, and that set holds all its other digits. So \
+             A or B holds 9, and r1c3 sees every 9 in them, so it can't be 9."
         );
         assert_eq!(removals(Some(step)), [(idx(0, 2), 1 << 9)]);
     }
@@ -801,10 +793,9 @@ mod tests {
         assert_eq!(
             step.why,
             "r1c1, r1c2 and r1c3 fit only 1, 2, 3, 4 and 5. With r1c5 (1 or 2) and \
-             r2c2 (3 or 4), that's five cells for five digits, and no two can match \
-             (each two share a house or no digit), so each digit is in one of them. \
-             So 1 and 2 are in the row 1 cells among them, 3 and 4 in the box 1 cells, \
-             and 5 in the shared ones. So r1c8 can't be 1 or 5, and r3c3 can't be 3 or 5."
+             r2c2 (3 or 4), these five cells hold the five digits once each: 1 and 2 in \
+             their row 1 cells, 3 and 4 in their box 1 cells, and 5 in the shared ones. \
+             So r1c8 can't be 1 or 5, and r3c3 can't be 3 or 5."
         );
         assert_eq!(
             removals(Some(step)),
@@ -856,11 +847,10 @@ mod tests {
         );
         assert_eq!(
             step.why,
-            "r1c1 is 1 or 2. Each petal fits one more digit than it has cells: \
-             r1c5, r1c6 (1, 3, 9), whose 1 sees r1c1; r5c1, r6c1 (2, 4, 9), whose 2 sees \
-             r1c1. Whichever digit r1c1 is, its petal has none of it, so the petal's cells \
-             take all its other digits, 9 included. So one of the petals holds 9, and r6c6 \
-             sees every 9 in them, so it can't be 9."
+            "r1c1 is 1 or 2. Petals: r1c5, r1c6 (1, 3, 9), whose 1 sees r1c1; r5c1, r6c1 \
+             (2, 4, 9), whose 2 sees r1c1. Whichever digit r1c1 is, its petal has none of \
+             it and holds all its other digits. So one of the petals holds 9, and r6c6 sees \
+             every 9 in them, so it can't be 9."
         );
         assert_eq!(removals(Some(step)), [(idx(5, 5), 1 << 9)]);
     }

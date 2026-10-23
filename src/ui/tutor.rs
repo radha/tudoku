@@ -80,6 +80,34 @@ fn para(lines: &mut Vec<Line<'static>>, text: &str, style: Style) {
     );
 }
 
+/// Wrapped `lines` in `style`, at most `room` of them: when some have to
+/// go, the last one kept ends in "…".
+fn cut(mut lines: Vec<String>, room: usize, style: Style) -> Vec<Line<'static>> {
+    let cut = lines.len() > room;
+    lines.truncate(room);
+    let last = lines.pop().map(|mut last| {
+        if !cut {
+            return Line::styled(last, style);
+        }
+        // Make room for the "…", a word at a time.
+        while last.chars().count() >= TEXT_W {
+            match last.rfind(' ') {
+                Some(at) => last.truncate(at),
+                None => _ = last.pop(),
+            }
+        }
+        Line::from(vec![
+            Span::styled(last, style),
+            Span::styled("…", Style::default().fg(MUTED)),
+        ])
+    });
+    lines
+        .into_iter()
+        .map(|l| Line::styled(l, style))
+        .chain(last)
+        .collect()
+}
+
 /// A key the pane offers, and what it does.
 struct Key {
     key: &'static str,
@@ -146,19 +174,27 @@ pub(super) fn draw_pane(frame: &mut Frame, area: Rect, tutor: &Tutor, hits: &mut
         // `draw_lesson` explains a strategy that has a worked example;
         // without one, the explaining is the step itself.
         (Advice::Step(step), TutorStage::Explain { .. } | TutorStage::ShowMe) => {
-            para(&mut lines, &step.why, ink);
-            lines.push(Line::from(""));
-            effect_lines(&mut lines, step);
             let apply = Key {
                 key: "a",
                 what: "do it for me",
                 action: Action::TutorApply,
             };
-            if tutor.can_apply() {
+            let keys = if tutor.can_apply() {
                 vec![apply, BACK]
             } else {
                 vec![BACK]
-            }
+            };
+            // What the step does always shows in full: a reason too long
+            // for the pane gives way. Blank lines go after the reason and
+            // after what it does.
+            let mut effect = Vec::new();
+            effect_lines(&mut effect, step);
+            let used = lines.len() + 1 + effect.len() + 1 + keys.len();
+            let room = usize::from(inner.height).saturating_sub(used);
+            lines.extend(cut(wrap(&step.why, TEXT_W), room, ink));
+            lines.push(Line::from(""));
+            lines.extend(effect);
+            keys
         }
         (Advice::WrongDigit(cell), _) => {
             let text = format!("{} is wrong: clear it first.", rc(*cell));
@@ -654,10 +690,12 @@ mod tests {
     use crate::game::Game;
     use crate::logic::{Grid, Link, Mark, Pattern};
     use crate::store::Store;
-    use crate::sudoku::{idx, parse_board, test_board};
+    use crate::sudoku::{dig, full_solution, idx, parse_board, solve_one, test_board};
     use crate::tutor::examples::example;
     use crate::ui::tests::{W, draw, text};
     use crate::ui::{MIN_H, MIN_W, PANEL_GAP, board_origin, hit_at};
+    use rand::SeedableRng;
+    use rand::rngs::StdRng;
     use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
 
     const XY_WING: &str =
@@ -795,6 +833,92 @@ mod tests {
         let (lines, hits) = draw(&app, MIN_W, MIN_H);
         assert!(text(&lines).contains("back to solving"));
         assert_eq!(selects(&hits), 81, "every cell stays clickable");
+    }
+
+    /// The rows of text in the side panel, `w` columns wide.
+    fn panel_rows(lines: &[String], w: u16) -> Vec<String> {
+        let (ox, _) = board_origin(Rect::new(0, 0, w, 50));
+        let x = usize::from(ox + BOARD_W + PANEL_GAP + 2);
+        lines
+            .iter()
+            .map(|l| l.chars().skip(x).take(TEXT_W).collect::<String>())
+            .map(|l| l.trim().to_string())
+            .collect()
+    }
+
+    /// The lines saying what `step` removes or places, as text.
+    fn effect_text(step: &Step) -> Vec<String> {
+        let mut lines = Vec::new();
+        effect_lines(&mut lines, step);
+        lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect()
+    }
+
+    /// Draw `step` in show me at the minimum size, and check the pane
+    /// says in full what it removes or places, and still offers its keys.
+    /// Returns the pane's rows.
+    fn shows_the_effect(game: Game, step: &Step, mode: NoteMode) -> Vec<String> {
+        let app = app_showing(game, step.clone(), mode);
+        let rows = panel_rows(&draw(&app, MIN_W, MIN_H).0, MIN_W);
+        let effect = effect_text(step);
+        let t = step.technique;
+        assert!(
+            rows.windows(effect.len()).any(|w| w == effect.as_slice()),
+            "{t:?} in {mode:?}: {effect:?} not all shown in {rows:#?}"
+        );
+        assert!(rows.iter().any(|r| r == "Esc  back to solving"), "{t:?}");
+        rows
+    }
+
+    #[test]
+    fn show_me_always_says_what_the_step_does() {
+        let game = |values: Board, solution: Board, notes: [u16; CELLS]| {
+            let mut game = Game::new(Difficulty::Zen, values, solution);
+            game.notes = notes;
+            game
+        };
+        // The worked examples hold the longest reasons, and fit whole when
+        // your notes are filled in.
+        for &t in Technique::ALL {
+            let ex = example(t).unwrap();
+            let solution = solve_one(&ex.values).unwrap();
+            let rows = shows_the_effect(
+                game(ex.values, solution, ex.cands),
+                &ex.step,
+                NoteMode::Full,
+            );
+            assert!(!rows.iter().any(|r| r.contains('…')), "{t:?}: {rows:#?}");
+            shows_the_effect(
+                game(ex.values, solution, [0; CELLS]),
+                &ex.step,
+                NoteMode::PairMarks,
+            );
+        }
+        // Dealt puzzles, solved with notes and without.
+        let mut rng = StdRng::seed_from_u64(7);
+        for _ in 0..8 {
+            let solution = full_solution(&mut rng);
+            let puzzle = dig(&solution, CELLS, &mut rng);
+            let mut grid = Grid::new(&puzzle);
+            while let Some(step) = grid.next_step() {
+                let values = *grid.values();
+                if step.technique > Technique::HiddenSingle {
+                    shows_the_effect(game(values, solution, *grid.cands()), &step, NoteMode::Full);
+                }
+                if let Some(fresh) = Grid::new(&values).next_step()
+                    && fresh.technique > Technique::HiddenSingle
+                {
+                    shows_the_effect(
+                        game(values, solution, [0; CELLS]),
+                        &fresh,
+                        NoteMode::PairMarks,
+                    );
+                }
+                grid.apply(&step);
+            }
+        }
     }
 
     #[test]
