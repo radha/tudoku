@@ -1,6 +1,6 @@
 //! Fish: X-Wing, Swordfish and Jellyfish, and their finned and sashimi kin.
 
-use super::{Grid, Pattern, Role, Step, Technique, bits, cell_list, listing, subsets};
+use super::{Grid, Pattern, Role, Step, Technique, a_digit, bits, cell_list, listing, subsets};
 use crate::sudoku::{HOUSES, N, box_of_cell, idx};
 
 impl Grid {
@@ -140,12 +140,13 @@ impl Grid {
                             "Look at {bases} {} and {covers_name} {}{kind}. The fin{plural} {} \
                              stick{s_verb} out in box {boxn}. If the fin{plural} {not} {digit}, every \
                              {digit} in those {bases} is in those {covers_name}, so those \
-                             {covers_name} have no room for a {digit} outside those {bases}; if \
+                             {covers_name} have no room for {} outside those {bases}; if \
                              {one}, box {boxn} has its {digit} there. Either way, the other {digit}s \
                              of those {covers_name} in box {boxn} are out.",
                             numbers(set),
                             numbers(cover),
                             cell_list(&fins),
+                            a_digit(digit),
                         );
                         if let Some(step) = self.eliminating(technique, removals, pattern, why) {
                             return Some(step);

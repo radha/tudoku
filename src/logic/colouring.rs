@@ -4,7 +4,9 @@
 //! it, the next doesn't, and so on. So the chain's cells split into two
 //! colours, and one colour is all the digit while the other has none.
 
-use super::{Grid, Link, LinkKind, Pattern, Role, Step, Technique, are, cell_list, rc, sees};
+use super::{
+    Grid, Link, LinkKind, Pattern, Role, Step, Technique, a_digit, are, cell_list, rc, sees,
+};
 use crate::sudoku::{CELLS, HOUSES};
 
 /// A connected chain of conjugate pairs on one digit.
@@ -171,8 +173,8 @@ impl Grid {
             .collect();
         let why = format!(
             "Along these pairs, {digit} alternates: {} {} one colour and {} {} the other, \
-             and one colour is all {digit}. {} {} both colours, so {} a {digit} \
-             either way (Simple Colouring trap) and can't be {digit}.",
+             and one colour is all {digit}. {} {} both colours, so {} {} either way \
+             (Simple Colouring trap) and can't be {digit}.",
             cell_list(&chain.colours[0]),
             are(&chain.colours[0]),
             cell_list(&chain.colours[1]),
@@ -188,6 +190,7 @@ impl Grid {
             } else {
                 "they see"
             },
+            a_digit(digit),
         );
         let pattern = self.chain_pattern(digit, chain, &[(0, Role::Key), (1, Role::Other)]);
         let removals = targets.into_iter().map(|c| (c, bit)).collect();

@@ -2,8 +2,8 @@
 //! and claiming, and naked and hidden subsets.
 
 use super::{
-    Grid, Pattern, Role, Step, Technique, bits, cell_list, digit_choice, digit_list, house_name,
-    rc, subsets,
+    Grid, Pattern, Role, Step, Technique, a_digit, bits, cell_list, digit_choice, digit_list,
+    house_name, rc, subsets,
 };
 use crate::sudoku::{ALL_DIGITS, CELLS, HOUSES, N, box_of_cell, col_of, row_of};
 
@@ -32,9 +32,10 @@ impl Grid {
                 ..Pattern::default()
             };
             let why = format!(
-                "{} is the last empty cell in {}, so it's a {digit}.",
+                "{} is the last empty cell in {}, so it's {}.",
                 rc(cell),
-                house_name(h)
+                house_name(h),
+                a_digit(digit),
             );
             return Some(self.placing(Technique::FullHouse, cell, digit, pattern, why));
         }

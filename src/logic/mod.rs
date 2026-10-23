@@ -239,6 +239,12 @@ fn cell_list(cells: &[usize]) -> String {
     listing(cells.iter().map(|&c| rc(c)), "and")
 }
 
+/// A digit with its article: "a 4", but "an 8".
+fn a_digit(digit: u8) -> String {
+    let article = if digit == 8 { "an" } else { "a" };
+    format!("{article} {digit}")
+}
+
 /// "is" for one cell, "are" for several.
 fn are(cells: &[usize]) -> &'static str {
     if cells.len() == 1 { "is" } else { "are" }
@@ -614,6 +620,8 @@ mod tests {
         assert_eq!(digit_list(1 << 7), "7");
         assert_eq!(digit_list((1 << 2) | (1 << 7)), "2 and 7");
         assert_eq!(digit_list((1 << 1) | (1 << 4) | (1 << 9)), "1, 4 and 9");
+        assert_eq!(a_digit(4), "a 4");
+        assert_eq!(a_digit(8), "an 8");
     }
 
     #[test]
@@ -665,10 +673,17 @@ mod tests {
                 digit: s[0]
             }
         );
+        assert_eq!(s[0], 5);
         assert_eq!(
             step.why,
-            format!("r1c1 is the last empty cell in row 1, so it's a {}.", s[0])
+            "r1c1 is the last empty cell in row 1, so it's a 5."
         );
+        // An 8 takes "an".
+        let mut b = s;
+        let eight = (0..CELLS).find(|&i| s[i] == 8).unwrap();
+        b[eight] = 0;
+        let step = Grid::new(&b).find(Technique::FullHouse).unwrap();
+        assert!(step.why.ends_with("so it's an 8."), "{}", step.why);
     }
 
     #[test]
