@@ -526,12 +526,19 @@ impl Grid {
         let stem_digits = self.cands[stem];
         let described: Vec<String> = bits(stem_digits)
             .zip(petals)
-            .map(|(d, p)| format!("{}, whose {d}s all see {}", p.describe(), rc(stem)))
+            .map(|(d, p)| {
+                let seers = if p.spots[d].count_ones() == 1 {
+                    format!("whose {d} sees")
+                } else {
+                    format!("whose {d}s all see")
+                };
+                format!("{}, {seers} {}", p.describe(), rc(stem))
+            })
             .collect();
         let why = format!(
             "{} is {}. Each petal fits one more digit than it has cells: {}. Whichever digit \
              {} is, its petal has none of it, so the petal's cells take all its other digits, \
-             {z} included. So a petal holds {z}, and {}",
+             {z} included. So one of the petals holds {z}, and {}",
             rc(stem),
             digit_choice(stem_digits),
             described.join("; "),
@@ -850,10 +857,34 @@ mod tests {
         assert_eq!(
             step.why,
             "r1c1 is 1 or 2. Each petal fits one more digit than it has cells: \
-             r1c5, r1c6 (1, 3, 9), whose 1s all see r1c1; r5c1, r6c1 (2, 4, 9), whose \
-             2s all see r1c1. Whichever digit r1c1 is, its petal has none of it, so the \
-             petal's cells take all its other digits, 9 included. So a petal holds 9, \
-             and r6c6 sees every 9 in them, so it can't be 9."
+             r1c5, r1c6 (1, 3, 9), whose 1 sees r1c1; r5c1, r6c1 (2, 4, 9), whose 2 sees \
+             r1c1. Whichever digit r1c1 is, its petal has none of it, so the petal's cells \
+             take all its other digits, 9 included. So one of the petals holds 9, and r6c6 \
+             sees every 9 in them, so it can't be 9."
+        );
+        assert_eq!(removals(Some(step)), [(idx(5, 5), 1 << 9)]);
+    }
+
+    #[test]
+    fn death_blossom_counts_each_petals_stem_digits() {
+        // As above, but r6c1 {2,4,9} also fits 2: that petal's 2s are two
+        // cells, both seeing the stem down column 1.
+        let grid = staged(&[
+            (idx(0, 0), &[1, 2]),
+            (idx(0, 4), &[1, 3]),
+            (idx(0, 5), &[3, 9]),
+            (idx(4, 0), &[2, 4]),
+            (idx(5, 0), &[2, 4, 9]),
+            (idx(5, 5), &[7, 9]),
+        ]);
+        let step = grid.death_blossom().unwrap();
+        assert!(
+            step.why.contains(
+                "r1c5, r1c6 (1, 3, 9), whose 1 sees r1c1; \
+                 r5c1, r6c1 (2, 4, 9), whose 2s all see r1c1."
+            ),
+            "{}",
+            step.why
         );
         assert_eq!(removals(Some(step)), [(idx(5, 5), 1 << 9)]);
     }

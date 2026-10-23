@@ -311,7 +311,7 @@ pub fn lesson(t: Technique) -> Lesson {
         AlsXyWing => Lesson {
             steps: &[
                 "ALS: 1-4 cells in one house fitting one more digit than cells. No digit repeats, so if one is ruled out, each other one fills a cell.",
-                "Find ALSs A, B, C, no shared cells, and different link digits X and Y: every X in A sees every X in C, every Y in B every Y in C.",
+                "Find ALSs A, B, C, no shared cells, and links X in A and C, Y (not X) in B and C: every X in A sees every X in C, every Y in B every Y in C.",
                 "C misses one digit at most, so holds X or Y: A lacks X or B lacks Y, and holds its others. So a Z in A and B (not X or Y) is in one. Cells outside seeing all their Zs can't be Z.",
             ],
             roles: ("removed digit", "link digit"),
