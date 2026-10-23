@@ -300,6 +300,38 @@ pub fn lesson(t: Technique) -> Lesson {
             ],
             roles: ("ends", "chain"),
         },
+        AlsXz => Lesson {
+            steps: &[
+                "ALS: 1-4 cells in one house fitting one more digit than cells. No digit repeats, so if one is ruled out, each other one fills a cell.",
+                "Find two ALSs, no shared cell, and a link digit X both fit: every X in one sees every X in the other. They can't both hold X: at least one lacks it, so holds all its other digits.",
+                "So a digit Z both fit (not X) is in one of them. A cell outside both seeing all their Zs can't be Z.",
+            ],
+            roles: ("removed digit", "link digit"),
+        },
+        AlsXyWing => Lesson {
+            steps: &[
+                "ALS: 1-4 cells in one house fitting one more digit than cells. No digit repeats, so if one is ruled out, each other one fills a cell.",
+                "Find ALSs A, B, C, no shared cells, and different link digits X and Y: every X in A sees every X in C, every Y in B every Y in C.",
+                "C misses one digit at most, so holds X or Y: A lacks X or B lacks Y, and holds its others. So a Z in A and B (not X or Y) is in one. Cells outside seeing all their Zs can't be Z.",
+            ],
+            roles: ("removed digit", "link digit"),
+        },
+        SueDeCoq => Lesson {
+            steps: &[
+                "Where a box meets a line (row or column), take 2-3 empty cells fitting 2 digits more than cells.",
+                "Add a line cell outside the box and a box cell outside the line, each fitting only two digits, both from those, none shared.",
+                "Any two share a house or no digit, so all differ; with as many digits, each fills one. So the line cell's digits stay in the line, the box cell's in the box, the rest in both: other cells of each house lose them.",
+            ],
+            roles: ("intersection", "helpers"),
+        },
+        DeathBlossom => Lesson {
+            steps: &[
+                "Stem: a cell fitting 2 or 3 digits. Each stem digit has a petal: an ALS (1-3 cells in one house fitting one more digit than cells) holding it, whose cells fitting it all see the stem. No shared cells.",
+                "The stem is one digit, so that digit's petal lacks it, and (no digit repeating) holds all its others.",
+                "So a digit Z every petal fits, and the stem doesn't, is in a petal. A cell outside seeing all petal Zs can't be Z.",
+            ],
+            roles: ("removed digit", "stem & petals"),
+        },
     }
 }
 

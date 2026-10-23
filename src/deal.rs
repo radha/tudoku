@@ -104,7 +104,9 @@ pub fn level_of(t: Technique) -> Difficulty {
         | BugPlusOne | Jellyfish | FinnedSwordfish | WXYZWing | FinnedJellyfish => {
             Difficulty::Master
         }
-        RemotePair | XChain | XYChain | Aic => Difficulty::Zen,
+        RemotePair | XChain | XYChain | Aic | AlsXz | AlsXyWing | SueDeCoq | DeathBlossom => {
+            Difficulty::Zen
+        }
     }
 }
 
@@ -203,6 +205,7 @@ mod tests {
     fn zen_deals_only_chain_and_set_puzzles() {
         assert!(!Difficulty::Zen.accepts(Technique::Jellyfish));
         assert!(Difficulty::Zen.accepts(Technique::XChain));
+        assert!(Difficulty::Zen.accepts(Technique::DeathBlossom));
         assert!(Difficulty::Master.accepts(Technique::Jellyfish));
         assert!(!Difficulty::Master.accepts(Technique::XWing));
     }

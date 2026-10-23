@@ -9,8 +9,8 @@
 //! comes out true: so at least one end is true.
 
 use super::{
-    Grid, Link, LinkKind, Mark, Pattern, Role, Step, Technique, are, cell_list, digit_list, rc,
-    sees,
+    Cells, Grid, HOUSE_CELLS, Link, LinkKind, Mark, Pattern, Role, SEEN, Step, Technique, are,
+    cell_list, cells_in, digit_list, rc, sees,
 };
 use crate::sudoku::{CELLS, N, box_of_cell, col_of, row_of};
 
@@ -33,58 +33,6 @@ fn cell_of(n: Node) -> usize {
 
 fn digit_of(n: Node) -> u8 {
     (n % N) as u8 + 1
-}
-
-/// A set of cells, one bit each.
-type Cells = u128;
-
-/// For each cell, the cells it sees.
-static SEEN: [Cells; CELLS] = seen_masks();
-
-/// For each house (rows, columns, boxes), its cells.
-static HOUSE_CELLS: [Cells; 3 * N] = house_masks();
-
-const fn seen_masks() -> [Cells; CELLS] {
-    let mut masks = [0; CELLS];
-    let mut a = 0;
-    while a < CELLS {
-        let mut b = 0;
-        while b < CELLS {
-            if a != b
-                && (row_of(a) == row_of(b)
-                    || col_of(a) == col_of(b)
-                    || box_of_cell(a) == box_of_cell(b))
-            {
-                masks[a] |= 1 << b;
-            }
-            b += 1;
-        }
-        a += 1;
-    }
-    masks
-}
-
-const fn house_masks() -> [Cells; 3 * N] {
-    let mut masks = [0; 3 * N];
-    let mut c = 0;
-    while c < CELLS {
-        masks[row_of(c)] |= 1 << c;
-        masks[N + col_of(c)] |= 1 << c;
-        masks[2 * N + box_of_cell(c)] |= 1 << c;
-        c += 1;
-    }
-    masks
-}
-
-/// The cells in `set`, lowest first.
-fn cells_in(mut set: Cells) -> impl Iterator<Item = usize> {
-    std::iter::from_fn(move || {
-        (set != 0).then(|| {
-            let c = set.trailing_zeros() as usize;
-            set &= set - 1;
-            c
-        })
-    })
 }
 
 /// Which links a kind of chain may use. Weak links between cells on one

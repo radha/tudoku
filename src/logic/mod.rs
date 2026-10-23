@@ -10,6 +10,7 @@ mod basic;
 mod chains;
 mod colouring;
 mod fish;
+mod sets;
 mod single_digit;
 mod uniqueness;
 mod wings;
@@ -53,6 +54,10 @@ pub enum Technique {
     XChain,
     XYChain,
     Aic,
+    AlsXz,
+    AlsXyWing,
+    SueDeCoq,
+    DeathBlossom,
 }
 
 impl Technique {
@@ -89,6 +94,10 @@ impl Technique {
         Technique::XChain,
         Technique::XYChain,
         Technique::Aic,
+        Technique::AlsXz,
+        Technique::AlsXyWing,
+        Technique::SueDeCoq,
+        Technique::DeathBlossom,
     ];
 
     pub fn name(self) -> &'static str {
@@ -125,6 +134,10 @@ impl Technique {
             Technique::XChain => "X-Chain",
             Technique::XYChain => "XY-Chain",
             Technique::Aic => "AIC",
+            Technique::AlsXz => "ALS-XZ",
+            Technique::AlsXyWing => "ALS-XY-Wing",
+            Technique::SueDeCoq => "Sue de Coq",
+            Technique::DeathBlossom => "Death Blossom",
         }
     }
 
@@ -260,6 +273,58 @@ fn sees(a: usize, b: usize) -> bool {
     a != b && (row_of(a) == row_of(b) || col_of(a) == col_of(b) || box_of_cell(a) == box_of_cell(b))
 }
 
+/// A set of cells, one bit each.
+type Cells = u128;
+
+/// For each cell, the cells it sees.
+static SEEN: [Cells; CELLS] = seen_masks();
+
+/// For each house (rows, columns, boxes), its cells.
+static HOUSE_CELLS: [Cells; 3 * N] = house_masks();
+
+const fn seen_masks() -> [Cells; CELLS] {
+    let mut masks = [0; CELLS];
+    let mut a = 0;
+    while a < CELLS {
+        let mut b = 0;
+        while b < CELLS {
+            if a != b
+                && (row_of(a) == row_of(b)
+                    || col_of(a) == col_of(b)
+                    || box_of_cell(a) == box_of_cell(b))
+            {
+                masks[a] |= 1 << b;
+            }
+            b += 1;
+        }
+        a += 1;
+    }
+    masks
+}
+
+const fn house_masks() -> [Cells; 3 * N] {
+    let mut masks = [0; 3 * N];
+    let mut c = 0;
+    while c < CELLS {
+        masks[row_of(c)] |= 1 << c;
+        masks[N + col_of(c)] |= 1 << c;
+        masks[2 * N + box_of_cell(c)] |= 1 << c;
+        c += 1;
+    }
+    masks
+}
+
+/// The cells in `set`, lowest first.
+fn cells_in(mut set: Cells) -> impl Iterator<Item = usize> {
+    std::iter::from_fn(move || {
+        (set != 0).then(|| {
+            let c = set.trailing_zeros() as usize;
+            set &= set - 1;
+            c
+        })
+    })
+}
+
 /// A board plus pencil marks: the ones a perfect note-taker would have,
 /// or ones someone noted by hand.
 #[derive(Debug, Clone)]
@@ -366,6 +431,10 @@ impl Grid {
             XChain => self.x_chain(),
             XYChain => self.xy_chain(),
             Aic => self.aic(),
+            AlsXz => self.als_xz(),
+            AlsXyWing => self.als_xy_wing(),
+            SueDeCoq => self.sue_de_coq(),
+            DeathBlossom => self.death_blossom(),
         }
     }
 
@@ -554,7 +623,7 @@ mod tests {
         for (i, &t) in Technique::ALL.iter().enumerate() {
             assert_eq!(t as usize, i, "{t:?}");
         }
-        assert_eq!(*Technique::ALL.last().unwrap(), Technique::Aic);
+        assert_eq!(*Technique::ALL.last().unwrap(), Technique::DeathBlossom);
     }
 
     #[test]
@@ -704,6 +773,10 @@ mod tests {
             XChain,
             XYChain,
             Aic,
+            AlsXz,
+            AlsXyWing,
+            SueDeCoq,
+            DeathBlossom,
         ] {
             assert!(found[t as usize] > 0, "{t:?} never fired: {found:?}");
         }
