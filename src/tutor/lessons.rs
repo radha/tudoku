@@ -263,6 +263,43 @@ pub fn lesson(t: Technique) -> Lesson {
             ],
             roles: ("fish cells", "fins"),
         },
+        RemotePair => Lesson {
+            steps: &[
+                "Find four or more cells where only the same two digits fit, joined into one group by seeing each other.",
+                "Two of them that see each other can't match: one is each digit. So colour the group A and B, with cells that see each other in different colours.",
+                "Then all the As are one digit and all the Bs the other.",
+                "A cell outside the group that sees an A and a B sees both digits, so it can't be either.",
+            ],
+            roles: ("colour A", "colour B"),
+        },
+        XChain => Lesson {
+            steps: &[
+                "Strong link: a house where a digit fits only two cells. If one isn't it, the other is.",
+                "Weak link: two cells that see each other. If one is it, the other isn't.",
+                "Chain them strong, weak, strong ... ending strong, no cell twice.",
+                "If either end isn't the digit, each link forces the next, and the far end is. So one end is.",
+                "Any other cell that sees both ends can't be the digit.",
+            ],
+            roles: ("ends", "chain"),
+        },
+        XYChain => Lesson {
+            steps: &[
+                "Find cells that fit only two digits, each seeing the next in a path.",
+                "If the first isn't its start digit, it's its other. The next cell must also fit that one, and can't be it, so it's its other. And so on.",
+                "So the last cell is its end digit: one end is true.",
+                "Same digit at both ends: a cell seeing both can't be it. Else, if the end cells see each other, neither can be the other's digit, or both would be false.",
+            ],
+            roles: ("ends", "chain"),
+        },
+        Aic => Lesson {
+            steps: &[
+                "Strong link: a house's only two spots for a digit, or a cell's only two digits. One is true.",
+                "Weak link: a digit in two cells that see each other, or two digits in a cell. At most one is true.",
+                "Chain them strong, weak ... strong. If one end is false, the other is forced true.",
+                "Same digit at both ends: a cell seeing both can't be it. Else, if the end cells see each other, neither can be the other's digit, or both would be false.",
+            ],
+            roles: ("ends", "chain"),
+        },
     }
 }
 

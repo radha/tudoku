@@ -57,11 +57,9 @@ impl Difficulty {
     }
 
     /// Whether a puzzle whose hardest step is `hardest` belongs at this
-    /// level. Zen has no strategies of its own until it gets some, so for
-    /// now it deals Master puzzles.
+    /// level.
     pub fn accepts(self, hardest: Technique) -> bool {
         level_of(hardest) == self
-            || (self == Difficulty::Zen && level_of(hardest) == Difficulty::Master)
     }
 
     /// The level with this name (as shown and as saved).
@@ -106,6 +104,7 @@ pub fn level_of(t: Technique) -> Difficulty {
         | BugPlusOne | Jellyfish | FinnedSwordfish | WXYZWing | FinnedJellyfish => {
             Difficulty::Master
         }
+        RemotePair | XChain | XYChain | Aic => Difficulty::Zen,
     }
 }
 
@@ -145,7 +144,7 @@ pub fn deal<R: Rng>(level: Difficulty, rng: &mut R) -> Deal {
 }
 
 /// [`deal`] on every core at once; the first worker to succeed wins. The
-/// rarest level (Zen) needs ~160 attempts of ~2ms each on average.
+/// rarest level (Master) needs ~11 attempts of ~3.5ms each on average.
 pub fn deal_fast(level: Difficulty) -> Deal {
     let workers = std::thread::available_parallelism().map_or(1, NonZero::get);
     let done = AtomicBool::new(false);
@@ -201,8 +200,9 @@ mod tests {
     }
 
     #[test]
-    fn zen_deals_master_puzzles_until_it_has_strategies() {
-        assert!(Difficulty::Zen.accepts(Technique::Jellyfish));
+    fn zen_deals_only_chain_and_set_puzzles() {
+        assert!(!Difficulty::Zen.accepts(Technique::Jellyfish));
+        assert!(Difficulty::Zen.accepts(Technique::XChain));
         assert!(Difficulty::Master.accepts(Technique::Jellyfish));
         assert!(!Difficulty::Master.accepts(Technique::XWing));
     }

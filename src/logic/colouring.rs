@@ -4,7 +4,7 @@
 //! it, the next doesn't, and so on. So the chain's cells split into two
 //! colours, and one colour is all the digit while the other has none.
 
-use super::{Grid, Link, LinkKind, Pattern, Role, Step, Technique, cell_list, rc, sees};
+use super::{Grid, Link, LinkKind, Pattern, Role, Step, Technique, are, cell_list, rc, sees};
 use crate::sudoku::{CELLS, HOUSES};
 
 /// A connected chain of conjugate pairs on one digit.
@@ -13,11 +13,6 @@ struct Chain {
     colours: [Vec<usize>; 2],
     /// The pairs, as the cells they join.
     pairs: Vec<(usize, usize)>,
-}
-
-/// "is" for one cell, "are" for several.
-fn are(cells: &[usize]) -> &'static str {
-    if cells.len() == 1 { "is" } else { "are" }
 }
 
 impl Grid {

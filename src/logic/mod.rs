@@ -7,6 +7,7 @@
 //! so it can be named, explained and drawn on the board.
 
 mod basic;
+mod chains;
 mod colouring;
 mod fish;
 mod single_digit;
@@ -48,6 +49,10 @@ pub enum Technique {
     FinnedSwordfish,
     WXYZWing,
     FinnedJellyfish,
+    RemotePair,
+    XChain,
+    XYChain,
+    Aic,
 }
 
 impl Technique {
@@ -80,6 +85,10 @@ impl Technique {
         Technique::FinnedSwordfish,
         Technique::WXYZWing,
         Technique::FinnedJellyfish,
+        Technique::RemotePair,
+        Technique::XChain,
+        Technique::XYChain,
+        Technique::Aic,
     ];
 
     pub fn name(self) -> &'static str {
@@ -112,6 +121,10 @@ impl Technique {
             Technique::FinnedSwordfish => "finned Swordfish",
             Technique::WXYZWing => "WXYZ-Wing",
             Technique::FinnedJellyfish => "finned Jellyfish",
+            Technique::RemotePair => "Remote Pair",
+            Technique::XChain => "X-Chain",
+            Technique::XYChain => "XY-Chain",
+            Technique::Aic => "AIC",
         }
     }
 
@@ -211,6 +224,11 @@ fn digit_choice(mask: u16) -> String {
 /// Cells by name: "r1c2 and r1c5".
 fn cell_list(cells: &[usize]) -> String {
     listing(cells.iter().map(|&c| rc(c)), "and")
+}
+
+/// "is" for one cell, "are" for several.
+fn are(cells: &[usize]) -> &'static str {
+    if cells.len() == 1 { "is" } else { "are" }
 }
 
 /// `items` as an English list whose last two are joined by `last`.
@@ -344,6 +362,10 @@ impl Grid {
             FinnedSwordfish => self.finned_fish(3, t),
             WXYZWing => self.wxyz_wing(),
             FinnedJellyfish => self.finned_fish(4, t),
+            RemotePair => self.remote_pair(),
+            XChain => self.x_chain(),
+            XYChain => self.xy_chain(),
+            Aic => self.aic(),
         }
     }
 
@@ -449,6 +471,9 @@ pub fn grade(puzzle: &Board) -> Option<Grade> {
 #[cfg(test)]
 pub(crate) mod testing {
     use super::*;
+    use crate::sudoku;
+    use rand::SeedableRng;
+    use rand::rngs::StdRng;
 
     /// A grid whose candidates are set by hand, to stage one pattern.
     pub fn staged(cands: &[(usize, &[u8])]) -> Grid {
@@ -478,15 +503,29 @@ pub(crate) mod testing {
             other => panic!("expected an elimination, got {other:?}"),
         }
     }
+
+    /// Walk 20 seeded minimal puzzles, including ones logic alone can't
+    /// finish, calling `visit` at every state with the step `next_step`
+    /// takes there and the puzzle's solution.
+    pub fn dealt_states(mut visit: impl FnMut(&Grid, &Step, &Board)) {
+        let mut rng = StdRng::seed_from_u64(99);
+        for _ in 0..20 {
+            let solution = sudoku::full_solution(&mut rng);
+            let puzzle = sudoku::dig(&solution, CELLS, &mut rng);
+            let mut grid = Grid::new(&puzzle);
+            while let Some(step) = grid.next_step() {
+                visit(&grid, &step, &solution);
+                grid.apply(&step);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::testing::staged;
+    use super::testing::{dealt_states, staged};
     use super::*;
     use crate::sudoku::{self, idx, parse_board, test_board};
-    use rand::SeedableRng;
-    use rand::rngs::StdRng;
 
     #[test]
     fn subsets_and_bits() {
@@ -515,7 +554,7 @@ mod tests {
         for (i, &t) in Technique::ALL.iter().enumerate() {
             assert_eq!(t as usize, i, "{t:?}");
         }
-        assert_eq!(*Technique::ALL.last().unwrap(), Technique::FinnedJellyfish);
+        assert_eq!(*Technique::ALL.last().unwrap(), Technique::Aic);
     }
 
     #[test]
@@ -606,22 +645,6 @@ mod tests {
         }
     }
 
-    /// Walk 20 seeded minimal puzzles, including ones logic alone can't
-    /// finish, calling `visit` at every state with the step `next_step`
-    /// takes there and the puzzle's solution.
-    fn dealt_states(mut visit: impl FnMut(&Grid, &Step, &Board)) {
-        let mut rng = StdRng::seed_from_u64(99);
-        for _ in 0..20 {
-            let solution = sudoku::full_solution(&mut rng);
-            let puzzle = sudoku::dig(&solution, CELLS, &mut rng);
-            let mut grid = Grid::new(&puzzle);
-            while let Some(step) = grid.next_step() {
-                visit(&grid, &step, &solution);
-                grid.apply(&step);
-            }
-        }
-    }
-
     /// Every detector, run at every state of the dealt puzzles, must agree
     /// with the real solution: placements match it and eliminations never
     /// remove its digit.
@@ -677,6 +700,10 @@ mod tests {
             FinnedSwordfish,
             WXYZWing,
             FinnedJellyfish,
+            RemotePair,
+            XChain,
+            XYChain,
+            Aic,
         ] {
             assert!(found[t as usize] > 0, "{t:?} never fired: {found:?}");
         }
