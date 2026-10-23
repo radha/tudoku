@@ -75,6 +75,14 @@ impl Technique {
             Technique::Jellyfish => "Jellyfish",
         }
     }
+
+    /// The technique whose `name()` is `name`, in any case.
+    pub fn from_name(name: &str) -> Option<Technique> {
+        Technique::ALL
+            .iter()
+            .copied()
+            .find(|t| t.name().eq_ignore_ascii_case(name))
+    }
 }
 
 /// What a step does to the board.
@@ -224,7 +232,6 @@ impl Grid {
         }
     }
 
-    #[allow(dead_code)] // the tutor reads these
     pub fn values(&self) -> &Board {
         &self.values
     }
@@ -460,6 +467,21 @@ mod tests {
             assert_eq!(t as usize, i, "{t:?}");
         }
         assert_eq!(*Technique::ALL.last().unwrap(), Technique::Jellyfish);
+    }
+
+    #[test]
+    fn techniques_are_found_by_name_in_any_case() {
+        for &t in Technique::ALL {
+            assert_eq!(Technique::from_name(t.name()), Some(t));
+            assert_eq!(Technique::from_name(&t.name().to_uppercase()), Some(t));
+        }
+        assert_eq!(Technique::from_name("x-wing"), Some(Technique::XWing));
+        assert_eq!(
+            Technique::from_name("Naked Single"),
+            Some(Technique::NakedSingle)
+        );
+        assert_eq!(Technique::from_name("skyscraper"), None);
+        assert_eq!(Technique::from_name(""), None);
     }
 
     #[test]

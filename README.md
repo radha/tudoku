@@ -57,9 +57,13 @@ strategy that makes progress, and only its name ("Look for HIDDEN
 SINGLE"), so you can still find it yourself. The board stays in play
 while the nudge is up.
 
-- `t` again shows the step on your board: why it holds, and which digit
-  it places or which candidates it removes, by cell name (`r3c4` is row
-  3, column 4).
+- `t` again explains the strategy in a few plain steps, beside a worked
+  example on a sample board (violet frame, EXAMPLE in the header, so it
+  never reads as your game). `←` `→` (or `h` `l`) step through it: what's
+  involved, then the links, then the result.
+- `t` once more shows the step on your board: why it holds, and which
+  digit it places or which candidates it removes, by cell name (`r3c4` is
+  row 3, column 4).
 - `a` does it for you: it places the digit, or clears those candidates
   from your notes.
 - `Esc` closes the tutor. The next `t` starts afresh from the board as it
@@ -85,7 +89,7 @@ puzzle you asked it about can't set a best time.
 | n                              | toggle pencil-mark mode                   |
 | 0 / x / e / Backspace / Delete | erase cell                                |
 | u / Ctrl+Z                     | undo                                      |
-| t                              | tutor: names a strategy; t again shows it |
+| t                              | tutor: names it, explains it, shows it    |
 | a                              | tutor: do it for me                       |
 | N (capital n)                  | new puzzle, same difficulty               |
 | d                              | difficulty picker                         |
@@ -121,4 +125,8 @@ Clicking outside a popup closes it, just like Esc.
 ```sh
 cargo test                               # solver, grader, generator + UI tests
 cargo run --release -- --offline-check   # deals one puzzle per level, checks + reports it
+cargo run --release -- --find-examples   # finds the tutor's worked examples still missing
 ```
+
+`--find-examples` takes strategy names too (`--find-examples X-Wing
+"naked pair"`) and prints lines for `src/tutor/examples.txt`.

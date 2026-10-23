@@ -1,6 +1,9 @@
 //! The tutor: reads the player's board, checks it, and names the easiest
 //! strategy that makes progress.
 
+pub mod examples;
+pub mod lessons;
+
 use crate::game::Game;
 use crate::logic::{Grid, Step};
 use crate::sudoku::{Board, CELLS, candidates_mask};

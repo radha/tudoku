@@ -16,9 +16,9 @@ use crate::app::{Action, App, BoardAction, MenuRow, Overlay, TutorStage};
 use crate::deal::Difficulty;
 use crate::game::Game;
 use crate::sudoku::{box_of, idx};
-use crate::tutor::Advice;
+use crate::tutor::{Advice, examples};
 
-mod tutor;
+pub(crate) mod tutor;
 
 // ---------------------------------------------------------------- palette
 
@@ -597,7 +597,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         ("Notes", "n toggles pencil marks, then 1-9"),
         ("Erase", "0 / x / e / Backspace / Delete"),
         ("Undo", "u  or Ctrl+Z"),
-        ("Tutor", "t — names a strategy; t again shows it"),
+        ("Tutor", "t — names a strategy; t again explains it"),
         ("New", "N (capital) — fresh puzzle, same level"),
         ("Level", "d — change difficulty"),
         ("Pause", "p, or switch windows — stops the clock"),
@@ -926,9 +926,26 @@ fn draw_game(frame: &mut Frame, area: Rect, app: &App, game: &Game, hits: &mut V
     // than they are tall. The header lines up with the board's left edge.
     let (ox, oy) = board_origin(area);
     let top_y = layout_top(area);
+
+    // What the tutor puts in place of your board: its worked example, or
+    // your board narrowed to its step. Pausing hides both, like the board.
+    let step = app.tutor.as_ref().and_then(|t| match &t.advice {
+        Advice::Step(step) if !game.paused => Some((step, t.stage)),
+        _ => None,
+    });
+    let example = step.and_then(|(step, stage)| match stage {
+        TutorStage::Explain { stage } => Some((examples::example(step.technique)?, stage)),
+        _ => None,
+    });
+    let focus = step
+        .filter(|&(_, stage)| example.is_none() && stage != TutorStage::Nudge)
+        .map(|(step, _)| step);
+
     let header = Rect::new(ox, top_y, area.right() - ox, 2);
-    let best = app.stats.level(game.difficulty).best();
-    let (top, bottom) = header_lines(game, best, header.width);
+    let (top, bottom) = match &example {
+        Some((ex, stage)) => tutor::explain_header(ex.step.technique, *stage),
+        None => header_lines(game, app.stats.level(game.difficulty).best(), header.width),
+    };
     frame.render_widget(Paragraph::new(vec![top, bottom]), header);
     if header_h(area) > 2 {
         frame.render_widget(
@@ -938,11 +955,20 @@ fn draw_game(frame: &mut Frame, area: Rect, app: &App, game: &Game, hits: &mut V
     }
 
     let labels_y = if header_h(area) > 2 { oy - 1 } else { oy };
-    let focus = app.tutor.as_ref().and_then(|t| match (&t.advice, t.stage) {
-        (Advice::Step(step), TutorStage::ShowMe) => Some(step),
-        _ => None,
-    });
-    if let Some(step) = focus {
+    if let Some((ex, stage)) = &example {
+        // A sample board: every placed digit is a given, and nothing on
+        // it can be clicked, since it isn't your game.
+        let given = std::array::from_fn(|i| ex.values[i] != 0);
+        let view = tutor::FocusView {
+            values: &ex.values,
+            given: &given,
+            cands: &ex.cands,
+            step: &ex.step,
+            stage: *stage,
+            frame: VIOLET,
+        };
+        tutor::draw_focus_board(frame, ox, oy, labels_y, &view);
+    } else if let Some(step) = focus {
         let (_, grid) = crate::tutor::read(&game.values, &game.notes);
         let view = tutor::FocusView {
             values: &game.values,
@@ -963,35 +989,61 @@ fn draw_game(frame: &mut Frame, area: Rect, app: &App, game: &Game, hits: &mut V
     } else {
         draw_board(frame, game, ox, oy, labels_y, hits);
     }
+
     let panel_x = ox + BOARD_W + PANEL_GAP;
-    if let Some(t) = &app.tutor {
-        // The tutor takes the buttons' place, and the number pad moves up
-        // to the board's top to give it the rest of the board's height.
-        draw_numpad(frame, game, panel_x, oy, hits);
-        let pane_y = oy + DIGIT_GRID_H + PANEL_GROUP_GAP;
-        let pane = Rect::new(panel_x, pane_y, PANEL_W, oy + BOARD_H - pane_y);
-        tutor::draw_pane(frame, pane, t, hits);
-    } else {
-        let panel_y = oy + (BOARD_H - PANEL_H) / 2;
-        draw_numpad(frame, game, panel_x, panel_y, hits);
-        let buttons_y = panel_y + DIGIT_GRID_H + PANEL_GROUP_GAP;
-        draw_buttons(frame, game, panel_x, buttons_y, hits);
+    match &app.tutor {
+        // Beside an example, the tutor takes the whole side panel. It
+        // keeps it while paused, so nothing jumps about.
+        Some(t) if matches!(t.stage, TutorStage::Explain { .. }) => {
+            let pane = Rect::new(panel_x, oy, PANEL_W, BOARD_H);
+            match &example {
+                Some((ex, _)) => tutor::draw_lesson(frame, pane, ex, hits),
+                None if game.paused => tutor::draw_pane_frame(frame, pane),
+                None => tutor::draw_pane(frame, pane, t, hits),
+            }
+        }
+        // Otherwise it takes the buttons' place, and the number pad moves
+        // up to the board's top to give it the rest of the board's height.
+        Some(t) => {
+            draw_numpad(frame, game, panel_x, oy, hits);
+            let pane_y = oy + DIGIT_GRID_H + PANEL_GROUP_GAP;
+            let pane = Rect::new(panel_x, pane_y, PANEL_W, oy + BOARD_H - pane_y);
+            if game.paused {
+                tutor::draw_pane_frame(frame, pane);
+            } else {
+                tutor::draw_pane(frame, pane, t, hits);
+            }
+        }
+        None => {
+            let panel_y = oy + (BOARD_H - PANEL_H) / 2;
+            draw_numpad(frame, game, panel_x, panel_y, hits);
+            let buttons_y = panel_y + DIGIT_GRID_H + PANEL_GROUP_GAP;
+            draw_buttons(frame, game, panel_x, buttons_y, hits);
+        }
     }
 
     // Footer hints, directly under the board.
     let footer_y = oy + BOARD_H;
     if footer_y < area.bottom() {
-        let keys = [
-            ("arrows/hjkl", "move"),
-            ("1-9", "fill"),
-            ("n", "notes"),
-            ("u", "undo"),
-            ("t", "tutor"),
-            ("e", "erase"),
-            ("d", "level"),
-            ("?", "help"),
-            ("q", "quit"),
-        ];
+        let keys: &[(&str, &str)] = if example.is_some() {
+            &[
+                ("← →", "step"),
+                ("t", "show me in my game"),
+                ("Esc", "back to solving"),
+            ]
+        } else {
+            &[
+                ("arrows/hjkl", "move"),
+                ("1-9", "fill"),
+                ("n", "notes"),
+                ("u", "undo"),
+                ("t", "tutor"),
+                ("e", "erase"),
+                ("d", "level"),
+                ("?", "help"),
+                ("q", "quit"),
+            ]
+        };
         let footer: Vec<Span> = keys
             .iter()
             .flat_map(|&(k, what)| {
@@ -1458,9 +1510,14 @@ mod tests {
             screens.push(a);
         }
         screens.push(app);
-        let mut tutored = app_with_game();
-        tutored.apply(Action::Tutor);
-        screens.push(tutored);
+        for presses in 1..=3 {
+            // The nudge, the worked example and the step on your board.
+            let mut tutored = app_with_game();
+            for _ in 0..presses {
+                tutored.apply(Action::Tutor);
+            }
+            screens.push(tutored);
+        }
         for (k, app) in screens.iter().enumerate() {
             for (w, h) in [(W, 50), (40, 20)] {
                 let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
@@ -1579,8 +1636,9 @@ mod tests {
     #[test]
     fn show_me_names_the_cell_and_the_digit() {
         let mut app = app_with_game();
-        app.apply(Action::Tutor);
-        app.apply(Action::Tutor);
+        for _ in 0..3 {
+            app.apply(Action::Tutor); // nudge, explain, show me
+        }
         let tutor = app.tutor.clone().unwrap();
         let Advice::Step(step) = &tutor.advice else {
             panic!("expected a step")
@@ -1594,10 +1652,39 @@ mod tests {
         assert!(pane.contains(&want), "{pane}");
         assert!(pane.contains("do it for me"), "{pane}");
         assert!(hits.iter().any(|h| h.action == Some(Action::TutorApply)));
+        assert_eq!(tutor.stage, TutorStage::ShowMe);
         assert!(
-            text(&lines).contains(&format!(" {} ", step.technique.name())),
+            text(&lines).contains(&format!(" {} ", tutor::heading(step.technique))),
             "the pane is titled with the strategy"
         );
+    }
+
+    #[test]
+    fn a_paused_tutor_shows_only_its_frame() {
+        for presses in [1, 3] {
+            let mut app = app_with_game();
+            for _ in 0..presses {
+                app.apply(Action::Tutor);
+            }
+            let Some(Advice::Step(step)) = app.tutor.as_ref().map(|t| t.advice.clone()) else {
+                panic!("expected a step")
+            };
+            app.pause();
+            let (lines, _) = draw(&app, W, 50);
+            let rows = pane_rows(&lines);
+            assert!(rows.iter().all(|r| r.trim().is_empty()), "{rows:?}");
+            let screen = text(&lines);
+            assert!(screen.contains("╭ Tutor ─"), "{presses}: a plain frame");
+            assert!(
+                !screen.contains(&tutor::heading(step.technique)),
+                "{presses}"
+            );
+            assert_eq!(
+                cell_row(&lines, 0, 0, 1),
+                " ".repeat(usize::from(CELL_W)),
+                "{presses}: the board is hidden too"
+            );
+        }
     }
 
     #[test]

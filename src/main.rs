@@ -35,6 +35,7 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 use crate::app::App;
 use crate::deal::{Deal, Difficulty};
 use crate::game::Game;
+use crate::logic::Technique;
 use crate::store::Store;
 
 /// Raw mode, alternate screen and mouse capture for as long as it lives.
@@ -256,9 +257,40 @@ fn offline_check() {
     }
 }
 
+/// Developer tool: search dealt puzzles for a worked example of each
+/// strategy named in `names`, or of every one that has none yet, and print
+/// the lines for `src/tutor/examples.txt`.
+fn find_examples(names: &[String]) {
+    let wanted: Vec<Technique> = if names.is_empty() {
+        Technique::ALL
+            .iter()
+            .copied()
+            .filter(|&t| tutor::examples::example(t).is_none())
+            .collect()
+    } else {
+        names
+            .iter()
+            .map(|name| {
+                Technique::from_name(name).unwrap_or_else(|| {
+                    eprintln!("tudoku: no strategy called {name:?}");
+                    std::process::exit(2);
+                })
+            })
+            .collect()
+    };
+    for line in tutor::examples::find_examples(&wanted, 7, 3000) {
+        println!("{line}");
+    }
+}
+
 fn main() {
-    if std::env::args().any(|a| a == "--offline-check") {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--offline-check") {
         offline_check();
+        return;
+    }
+    if let Some(at) = args.iter().position(|a| a == "--find-examples") {
+        find_examples(&args[at + 1..]);
         return;
     }
     if let Err(e) = run() {

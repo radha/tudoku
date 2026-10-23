@@ -22,7 +22,7 @@ use crate::game::Game;
 use crate::logic::Effect;
 use crate::store::{Stats, Store};
 use crate::sudoku::{CELLS, col_of, row_of};
-use crate::tutor::{self, Advice, NoteMode};
+use crate::tutor::{self, Advice, NoteMode, examples};
 
 /// How often a running game is saved even without edits.
 const AUTOSAVE_EVERY: Duration = Duration::from_secs(5);
@@ -75,6 +75,8 @@ pub enum Action {
     /// Let the tutor do what it advises.
     TutorApply,
     CloseTutor,
+    /// Step the worked example back (-1) or on (+1).
+    ExampleStep(i8),
 }
 
 /// How far the tutor has gone with its advice.
@@ -82,9 +84,16 @@ pub enum Action {
 pub enum TutorStage {
     /// Only the strategy's name, so you can hunt for it yourself.
     Nudge,
+    /// The strategy in plain steps, and a worked example on a sample
+    /// board, at one of its `EXAMPLE_STAGES`.
+    Explain { stage: u8 },
     /// The step itself, on your own board.
     ShowMe,
 }
+
+/// The worked example's stages: what's involved, then the links, then
+/// the result.
+pub const EXAMPLE_STAGES: u8 = 3;
 
 /// The tutor's pane: what it made of the board when it was opened, and
 /// how far it has gone.
@@ -256,7 +265,10 @@ impl App {
                 _ => None,
             };
         };
+        let explaining = self.explaining();
         let action = match code {
+            Left | Char('h') if explaining => Action::ExampleStep(-1),
+            Right | Char('l') if explaining => Action::ExampleStep(1),
             Up | Char('k') => Action::Board(Move(-1, 0)),
             Down | Char('j') => Action::Board(Move(1, 0)),
             Left | Char('h') => Action::Board(Move(0, -1)),
@@ -277,7 +289,19 @@ impl App {
             Char('p' | 'P') => Action::Pause,
             _ => return None,
         };
+        // The board on screen is an example: yours waits for you.
+        if explaining && matches!(action, Action::Board(_)) {
+            return None;
+        }
         Some(action)
+    }
+
+    /// Whether the tutor is showing its worked example in place of
+    /// your board.
+    fn explaining(&self) -> bool {
+        self.tutor
+            .as_ref()
+            .is_some_and(|t| matches!(t.stage, TutorStage::Explain { .. }))
     }
 
     /// Apply an action. Returns true when the app should quit.
@@ -302,6 +326,7 @@ impl App {
             Action::Tutor => self.ask_tutor(),
             Action::TutorApply => self.apply_tutor(),
             Action::CloseTutor => self.tutor = None,
+            Action::ExampleStep(delta) => self.step_example(delta),
         }
         false
     }
@@ -433,7 +458,7 @@ impl App {
     }
 
     fn play(&mut self, action: BoardAction) {
-        if !self.overlays.is_empty() {
+        if !self.overlays.is_empty() || self.explaining() {
             return;
         }
         let Some(g) = &mut self.game else { return };
@@ -458,8 +483,9 @@ impl App {
         }
     }
 
-    /// `t`: open the tutor on a nudge, or take it one stage deeper. Each
-    /// fresh opening counts against the puzzle's best time.
+    /// `t`: open the tutor on a nudge, or take it one stage deeper: the
+    /// worked example, then the step on your board. Each fresh opening
+    /// counts against the puzzle's best time.
     fn ask_tutor(&mut self) {
         if !self.overlays.is_empty() {
             return;
@@ -469,8 +495,13 @@ impl App {
             return;
         }
         if let Some(t) = &mut self.tutor {
-            if let Advice::Step(_) = t.advice {
-                t.stage = TutorStage::ShowMe;
+            if let Advice::Step(step) = &t.advice {
+                t.stage = match t.stage {
+                    TutorStage::Nudge if examples::example(step.technique).is_some() => {
+                        TutorStage::Explain { stage: 0 }
+                    }
+                    _ => TutorStage::ShowMe,
+                };
             }
             return;
         }
@@ -486,6 +517,20 @@ impl App {
             stage: TutorStage::Nudge,
         });
         self.save();
+    }
+
+    /// `←` / `→`: step the worked example back or on, within its stages.
+    fn step_example(&mut self, delta: i8) {
+        if !self.overlays.is_empty() {
+            return;
+        }
+        if let Some(Tutor {
+            stage: TutorStage::Explain { stage },
+            ..
+        }) = &mut self.tutor
+        {
+            *stage = stage.saturating_add_signed(delta).min(EXAMPLE_STAGES - 1);
+        }
     }
 
     /// `a`: do what the tutor advises, then put the tutor away.
@@ -565,7 +610,7 @@ mod tests {
     use super::*;
     use crate::logic::{Grid, Step};
     use crate::store::Store;
-    use crate::sudoku::{idx, parse_board, solve_one, test_board};
+    use crate::sudoku::{Board, idx, parse_board, solve_one, test_board};
     use crate::ui::{self, hit_at};
     use ratatui::{Terminal, backend::TestBackend};
 
@@ -1025,6 +1070,8 @@ mod tests {
         assert_eq!(stage(&app), Some(TutorStage::Nudge));
         assert_eq!(used(&app), 1);
         key(&mut app, KeyCode::Char('t'));
+        assert_eq!(stage(&app), Some(TutorStage::Explain { stage: 0 }));
+        key(&mut app, KeyCode::Char('t'));
         assert_eq!(stage(&app), Some(TutorStage::ShowMe));
         assert_eq!(used(&app), 1, "going deeper is the same ask");
         key(&mut app, KeyCode::Esc);
@@ -1032,6 +1079,137 @@ mod tests {
         key(&mut app, KeyCode::Char('t'));
         assert_eq!(stage(&app), Some(TutorStage::Nudge), "a fresh start");
         assert_eq!(used(&app), 2);
+    }
+
+    /// The stage of the worked example on screen.
+    fn example_stage(app: &App) -> u8 {
+        match stage(app) {
+            Some(TutorStage::Explain { stage }) => stage,
+            other => panic!("expected the example, got {other:?}"),
+        }
+    }
+
+    /// Everything about the game a stray key or click could change.
+    fn board_state(app: &App) -> ((usize, usize), Board, [u16; CELLS], bool, u32) {
+        let g = app.game.as_ref().unwrap();
+        (g.selected, g.values, g.notes, g.notes_mode, g.mistakes)
+    }
+
+    #[test]
+    fn explain_comes_between_nudge_and_show_me() {
+        let mut app = app_with_game(Difficulty::Easy);
+        key(&mut app, KeyCode::Char('t'));
+        assert_eq!(stage(&app), Some(TutorStage::Nudge));
+        key(&mut app, KeyCode::Char('t'));
+        assert_eq!(stage(&app), Some(TutorStage::Explain { stage: 0 }));
+        assert!(
+            !tutor_of(&app).can_apply(),
+            "nothing to apply to an example"
+        );
+
+        // The board under the example is your game: its keys wait.
+        let before = board_state(&app);
+        for code in [
+            KeyCode::Down,
+            KeyCode::Up,
+            KeyCode::Char('j'),
+            KeyCode::Char('k'),
+            KeyCode::Char('4'),
+            KeyCode::Char('e'),
+            KeyCode::Char('n'),
+            KeyCode::Char('u'),
+            KeyCode::Char('a'),
+        ] {
+            key(&mut app, code);
+        }
+        key_mods(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
+        assert_eq!(board_state(&app), before);
+        assert_eq!(stage(&app), Some(TutorStage::Explain { stage: 0 }));
+
+        key(&mut app, KeyCode::Char('t'));
+        assert_eq!(stage(&app), Some(TutorStage::ShowMe));
+
+        // Esc leaves the example for your game at once.
+        key(&mut app, KeyCode::Esc);
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('t'));
+        assert_eq!(example_stage(&app), 0);
+        key(&mut app, KeyCode::Esc);
+        assert_eq!(app.tutor, None);
+        assert_eq!(board_state(&app), before);
+    }
+
+    #[test]
+    fn arrows_step_through_the_example() {
+        let mut app = app_with_game(Difficulty::Easy);
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('t'));
+        let before = board_state(&app);
+        for want in [1, 2, 2] {
+            key(&mut app, KeyCode::Right);
+            assert_eq!(example_stage(&app), want);
+        }
+        for want in [1, 0, 0] {
+            key(&mut app, KeyCode::Left);
+            assert_eq!(example_stage(&app), want);
+        }
+        key(&mut app, KeyCode::Char('l'));
+        assert_eq!(example_stage(&app), 1);
+        key(&mut app, KeyCode::Char('h'));
+        assert_eq!(example_stage(&app), 0);
+        assert_eq!(board_state(&app), before, "the selection stays put");
+
+        // Outside the example, the arrows move the selection as ever.
+        key(&mut app, KeyCode::Char('t'));
+        app.apply(Action::ExampleStep(1));
+        assert_eq!(stage(&app), Some(TutorStage::ShowMe));
+        key(&mut app, KeyCode::Right);
+        assert_eq!(app.game.as_ref().unwrap().selected, (0, 3));
+    }
+
+    #[test]
+    fn pausing_during_explain_hides_the_example() {
+        let mut app = app_with_game(Difficulty::Easy);
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Right);
+        assert!(render(&app).0.contains("EXAMPLE"));
+        app.set_focus(false);
+        assert_eq!(app.top(), Some(Overlay::Paused));
+        let screen = render(&app).0;
+        assert!(screen.contains("Paused"), "{screen}");
+        assert!(!screen.contains("EXAMPLE"), "{screen}");
+        assert!(!screen.contains("show me in my game"), "{screen}");
+        key(&mut app, KeyCode::Right); // the pause screen takes the keys
+        key(&mut app, KeyCode::Char('p'));
+        assert!(!app.game.as_ref().unwrap().paused);
+        assert_eq!(stage(&app), Some(TutorStage::Explain { stage: 1 }));
+        assert!(render(&app).0.contains("EXAMPLE"));
+    }
+
+    #[test]
+    fn clicks_on_the_example_do_not_touch_your_game() {
+        let mut app = app_with_game(Difficulty::Easy);
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('t'));
+        let before = board_state(&app);
+        // The board's top-left corner, as drawn.
+        let (screen, _) = render(&app);
+        let (oy, ox) = screen
+            .lines()
+            .enumerate()
+            .find_map(|(y, line)| line.chars().position(|c| c == '┏').map(|x| (y, x)))
+            .expect("a board on screen");
+        let (ox, oy) = (ox as u16, oy as u16);
+        for r in 0..9 {
+            for c in 0..9 {
+                let x = ox + 1 + c * (ui::CELL_W + 1) + ui::CELL_W / 2;
+                let y = oy + 1 + r * (ui::CELL_H + 1) + ui::CELL_H / 2;
+                click(&mut app, x, y);
+            }
+        }
+        assert_eq!(board_state(&app), before);
+        assert_eq!(stage(&app), Some(TutorStage::Explain { stage: 0 }));
     }
 
     #[test]

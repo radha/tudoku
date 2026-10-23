@@ -1,6 +1,7 @@
 //! The tutor's pane, in the side panel under the number pad: first the
-//! name of a strategy to look for, then the step itself in r#c# terms,
-//! with the keys that go on from there.
+//! name of a strategy to look for, then the strategy explained beside a
+//! worked example on a sample board, then the step itself in r#c# terms
+//! on your own board, with the keys that go on from there.
 
 use ratatui::{
     Frame,
@@ -15,18 +16,20 @@ use super::{
     MUTED, NOTE, PANEL_W, PAT_BG, RED, SURFACE, VIOLET, cell_screen, grid_glyph, popup_block,
     push_hit,
 };
-use crate::app::{Action, Tutor, TutorStage};
-use crate::logic::{Effect, LinkKind, Role, Step, digit_list, rc};
+use crate::app::{Action, EXAMPLE_STAGES, Tutor, TutorStage};
+use crate::logic::{Effect, LinkKind, Role, Step, Technique, digit_list, rc};
 use crate::sudoku::{Board, CELLS, HOUSES};
+use crate::tutor::examples::Example;
+use crate::tutor::lessons::{Lesson, lesson};
 use crate::tutor::{Advice, NoteMode};
 
 /// Columns of text: the panel's width, less the border and a column of
 /// padding on each side.
-const TEXT_W: usize = PANEL_W as usize - 4;
+pub(crate) const TEXT_W: usize = PANEL_W as usize - 4;
 
 /// `text` broken at spaces into lines at most `width` columns wide. A
 /// word too long for a line of its own is split.
-pub(super) fn wrap(text: &str, width: usize) -> Vec<String> {
+pub(crate) fn wrap(text: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
     let mut lines = Vec::new();
     let mut line = String::new();
@@ -59,6 +62,15 @@ pub(super) fn wrap(text: &str, width: usize) -> Vec<String> {
     lines
 }
 
+/// A strategy's name as a title: "Naked single", "X-Wing".
+pub(super) fn heading(t: Technique) -> String {
+    let mut chars = t.name().chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
+}
+
 /// `text`, wrapped to the pane, in `style`.
 fn para(lines: &mut Vec<Line<'static>>, text: &str, style: Style) {
     lines.extend(
@@ -81,13 +93,21 @@ const BACK: Key = Key {
     action: Action::CloseTutor,
 };
 
+/// The pane's frame alone, for while the game is paused: like the board,
+/// what the tutor has to say waits for the clock.
+pub(super) fn draw_pane_frame(frame: &mut Frame, area: Rect) {
+    frame.render_widget(popup_block("Tutor"), area);
+}
+
 /// Draw the pane into `area`. Each key line is also a click target.
 pub(super) fn draw_pane(frame: &mut Frame, area: Rect, tutor: &Tutor, hits: &mut Vec<Hit>) {
     let title = match (&tutor.advice, tutor.stage) {
-        (Advice::Step(step), TutorStage::ShowMe) => step.technique.name(),
-        _ => "Tutor",
+        (Advice::Step(step), TutorStage::Explain { .. } | TutorStage::ShowMe) => {
+            heading(step.technique)
+        }
+        _ => "Tutor".to_string(),
     };
-    let block = popup_block(title);
+    let block = popup_block(&title);
     let inner = block.inner(area).inner(Margin::new(1, 0));
     frame.render_widget(block, area);
 
@@ -123,7 +143,9 @@ pub(super) fn draw_pane(frame: &mut Frame, area: Rect, tutor: &Tutor, hits: &mut
                 },
             ]
         }
-        (Advice::Step(step), TutorStage::ShowMe) => {
+        // `draw_lesson` explains a strategy that has a worked example;
+        // without one, the explaining is the step itself.
+        (Advice::Step(step), TutorStage::Explain { .. } | TutorStage::ShowMe) => {
             para(&mut lines, &step.why, ink);
             lines.push(Line::from(""));
             effect_lines(&mut lines, step);
@@ -162,8 +184,21 @@ pub(super) fn draw_pane(frame: &mut Frame, area: Rect, tutor: &Tutor, hits: &mut
         }
     };
     lines.push(Line::from(""));
+    put_keys(frame, area, inner, lines, &keys, hits);
+}
 
-    // The keys stay in view even if the text runs long.
+/// Draw `lines` and then `keys` into the pane's `inner` area, each key a
+/// click target across the pane. The keys stay in view even if the text
+/// runs long. Returns the row each key is on.
+fn put_keys(
+    frame: &mut Frame,
+    area: Rect,
+    inner: Rect,
+    mut lines: Vec<Line<'static>>,
+    keys: &[Key],
+    hits: &mut Vec<Hit>,
+) -> Vec<u16> {
+    let muted = Style::default().fg(MUTED);
     let room = usize::from(inner.height).saturating_sub(keys.len());
     if lines.len() > room {
         lines.truncate(room);
@@ -171,6 +206,7 @@ pub(super) fn draw_pane(frame: &mut Frame, area: Rect, tutor: &Tutor, hits: &mut
             *last = Line::styled("…", muted);
         }
     }
+    let mut rows = Vec::new();
     for key in keys {
         let y = inner.y + lines.len() as u16;
         push_hit(
@@ -178,15 +214,146 @@ pub(super) fn draw_pane(frame: &mut Frame, area: Rect, tutor: &Tutor, hits: &mut
             Rect::new(area.x + 1, y, area.width.saturating_sub(2), 1),
             Some(key.action),
         );
+        rows.push(y);
+        // Keys line up in a column, unless that would run off the pane.
+        let column = if 5 + key.what.chars().count() <= TEXT_W {
+            5
+        } else {
+            key.key.chars().count() + 2
+        };
         lines.push(Line::from(vec![
             Span::styled(
-                format!("{:<5}", key.key),
+                format!("{:<column$}", key.key),
                 Style::default().fg(INK).add_modifier(Modifier::BOLD),
             ),
             Span::styled(key.what, muted),
         ]));
     }
     frame.render_widget(Paragraph::new(lines), inner);
+    rows
+}
+
+/// The pane beside a worked example, the whole side panel: the strategy
+/// in numbered steps, a legend for the example's colours, and the keys.
+pub(super) fn draw_lesson(frame: &mut Frame, area: Rect, example: &Example, hits: &mut Vec<Hit>) {
+    let t = example.step.technique;
+    let lesson = lesson(t);
+    let block = popup_block(&heading(t));
+    let inner = block.inner(area).inner(Margin::new(1, 0));
+    frame.render_widget(block, area);
+
+    let ink = Style::default().fg(INK);
+    let number = Style::default().fg(ACCENT).add_modifier(Modifier::BOLD);
+    let mut lines = vec![Line::from("")];
+    for (n, step) in lesson.steps.iter().enumerate() {
+        for (k, line) in wrap(&format!("{} {step}", n + 1), TEXT_W)
+            .into_iter()
+            .enumerate()
+        {
+            lines.push(match line.split_once(' ') {
+                Some((num, rest)) if k == 0 => Line::from(vec![
+                    Span::styled(format!("{num} "), number),
+                    Span::styled(rest.to_string(), ink),
+                ]),
+                _ => Line::styled(line, ink),
+            });
+        }
+        lines.push(Line::from(""));
+    }
+    legend(&mut lines, &lesson, &example.step);
+    lines.push(Line::from(""));
+
+    let keys = [
+        Key {
+            key: "← →",
+            what: "step",
+            action: Action::ExampleStep(1),
+        },
+        Key {
+            key: "t",
+            what: "show me in my game",
+            action: Action::Tutor,
+        },
+        BACK,
+    ];
+    let rows = put_keys(frame, area, inner, lines, &keys, hits);
+    // A click on the left arrow (or the padding beside it) steps back;
+    // anywhere else on that line, on.
+    if let Some(&y) = rows.first() {
+        let back = Rect::new(area.x + 1, y, inner.x + 2 - (area.x + 1), 1);
+        push_hit(hits, back, Some(Action::ExampleStep(-1)));
+    }
+}
+
+/// What the example's colours mean: a chip for each role the strategy
+/// marks, then what the step removes or places.
+fn legend(lines: &mut Vec<Line<'static>>, lesson: &Lesson, step: &Step) {
+    let muted = Style::default().fg(MUTED);
+    let bold = Modifier::BOLD;
+    let chip = |fill| Style::default().fg(BG).bg(fill).add_modifier(bold);
+    for (role, name, fill) in [
+        (Role::Key, lesson.roles.0, ACCENT),
+        (Role::Other, lesson.roles.1, VIOLET),
+    ] {
+        let mark = step.pattern.marks.iter().find(|m| m.role == role);
+        if let Some(m) = mark.filter(|_| !name.is_empty()) {
+            lines.push(Line::from(vec![
+                Span::styled(format!(" {} ", m.digit), chip(fill)),
+                Span::styled(format!(" {name}"), muted),
+            ]));
+        }
+    }
+    lines.push(match &step.effect {
+        Effect::Place { digit, .. } => Line::from(vec![
+            Span::styled(format!(" {digit} "), chip(GREEN)),
+            Span::styled(" placed", muted),
+        ]),
+        Effect::Eliminate(removals) => {
+            let digit = removals
+                .first()
+                .map_or(0, |&(_, mask)| mask.trailing_zeros());
+            let red = Style::default().fg(RED).bg(ERR_BG).add_modifier(bold);
+            Line::from(vec![
+                Span::styled(" ", red),
+                Span::styled(digit.to_string(), red.add_modifier(Modifier::CROSSED_OUT)),
+                Span::styled(" ", red),
+                Span::styled(" removed", muted),
+            ])
+        }
+    });
+}
+
+/// The header over a worked example: an EXAMPLE badge, so the sample
+/// board never reads as your game, and how far the example has got.
+pub(super) fn explain_header(t: Technique, stage: u8) -> (Line<'static>, Line<'static>) {
+    let name = heading(t);
+    let badge = |fill| {
+        Style::default()
+            .fg(BG)
+            .bg(fill)
+            .add_modifier(Modifier::BOLD)
+    };
+    let muted = Style::default().fg(MUTED);
+    let top = Line::from(vec![
+        Span::styled(" TUDOKU ", badge(ACCENT)),
+        Span::raw("  "),
+        Span::styled(" EXAMPLE ", badge(VIOLET)),
+        Span::styled(format!("  {name}, on a sample board, not your game"), muted),
+    ]);
+    let bottom = Line::from(vec![
+        Span::styled(
+            name,
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(
+                "  ·  step {} of {EXAMPLE_STAGES}   ← → steps through it",
+                stage + 1
+            ),
+            muted,
+        ),
+    ]);
+    (top, bottom)
 }
 
 /// What the step does, by cell name.
@@ -297,6 +464,8 @@ pub(super) fn draw_focus_board(
 
     let label = Style::default().fg(MUTED);
     let mut chips: Vec<Chip> = Vec::new();
+    // Placed digits, fullwidth: two columns each.
+    let mut digits: Vec<Chip> = Vec::new();
     for r in 0..9 {
         let (_, y) = cell_screen(ox, oy, r, 0);
         buf[(ox - 1, y + CELL_H / 2)]
@@ -318,12 +487,11 @@ pub(super) fn draw_focus_board(
             let v = view.values[i];
             if v != 0 {
                 let on = pattern.digit == Some(v);
-                let digit = char::from_u32(0xFF10 + u32::from(v)).unwrap();
-                buf.set_string(
-                    x + CELL_W / 2,
-                    y + CELL_H / 2,
-                    digit.to_string(),
-                    Style::default()
+                digits.push(Chip {
+                    x: x + CELL_W / 2,
+                    y: y + CELL_H / 2,
+                    ch: char::from_u32(0xFF10 + u32::from(v)).unwrap(),
+                    style: Style::default()
                         .fg(if on { INK } else { DIM })
                         .bg(bg)
                         .add_modifier(if on {
@@ -331,7 +499,7 @@ pub(super) fn draw_focus_board(
                         } else {
                             Modifier::empty()
                         }),
-                );
+                });
                 continue;
             }
             let shown = pat[i] || touched[i];
@@ -451,6 +619,11 @@ pub(super) fn draw_focus_board(
         }
     }
     put(buf, &chips);
+    // Placed digits go on last and whole, so a line through one looks
+    // interrupted by it rather than splitting its two columns.
+    for d in &digits {
+        buf.set_string(d.x, d.y, d.ch.to_string(), d.style);
+    }
 
     for c in 0..9 {
         let (x, _) = cell_screen(ox, oy, 0, c);
@@ -479,11 +652,12 @@ mod tests {
     use crate::app::{App, BoardAction};
     use crate::deal::Difficulty;
     use crate::game::Game;
-    use crate::logic::{Grid, Technique};
+    use crate::logic::{Grid, Link, Mark, Pattern};
     use crate::store::Store;
-    use crate::sudoku::{parse_board, test_board};
+    use crate::sudoku::{idx, parse_board, test_board};
+    use crate::tutor::examples::example;
     use crate::ui::tests::{W, draw, text};
-    use crate::ui::{MIN_H, MIN_W, board_origin};
+    use crate::ui::{MIN_H, MIN_W, PANEL_GAP, board_origin, hit_at};
     use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
 
     const XY_WING: &str =
@@ -609,15 +783,225 @@ mod tests {
         assert!(drawn.modifier.contains(Modifier::CROSSED_OUT));
     }
 
+    fn selects(hits: &[Hit]) -> usize {
+        hits.iter()
+            .filter(|h| matches!(h.action, Some(Action::Board(BoardAction::Select(..)))))
+            .count()
+    }
+
     #[test]
     fn show_me_fits_the_minimum_terminal() {
         let (app, _) = xy_wing_app();
         let (lines, hits) = draw(&app, MIN_W, MIN_H);
         assert!(text(&lines).contains("back to solving"));
-        let selects = hits
+        assert_eq!(selects(&hits), 81, "every cell stays clickable");
+    }
+
+    #[test]
+    fn titles_name_the_strategy_with_a_capital() {
+        assert_eq!(heading(Technique::NakedSingle), "Naked single");
+        assert_eq!(heading(Technique::Pointing), "Pointing");
+        assert_eq!(heading(Technique::XWing), "X-Wing");
+        let (app, _) = xy_wing_app();
+        assert!(text(&draw(&app, W, 50).0).contains("╭ XY-Wing ─"));
+    }
+
+    #[test]
+    fn links_never_split_a_placed_digit() {
+        // Row 1 reads 5 3 . . 7 . . . . : a link between the 4s of r1c3
+        // and r1c6 runs through the 7 in r1c5.
+        let (puzzle, solution) = test_board();
+        let game = || Game::new(Difficulty::Easy, puzzle, solution);
+        let ends = [(idx(0, 2), 4), (idx(0, 5), 4)];
+        let step = Step {
+            technique: Technique::XYWing,
+            effect: Effect::Eliminate(vec![(idx(0, 8), 1 << 4)]),
+            pattern: Pattern {
+                cells: vec![idx(0, 2), idx(0, 5)],
+                marks: ends
+                    .iter()
+                    .map(|&(cell, digit)| Mark {
+                        cell,
+                        digit,
+                        role: Role::Other,
+                    })
+                    .collect(),
+                links: vec![Link {
+                    from: ends[0],
+                    to: ends[1],
+                    kind: LinkKind::Weak,
+                }],
+                ..Pattern::default()
+            },
+            why: "Because.".to_string(),
+        };
+        let mut plain = App::new(Store::none());
+        plain.start_game(game());
+        let plain = screen(&plain, W, 50);
+        let shown = screen(&app_showing(game(), step, NoteMode::PairMarks), W, 50);
+
+        let (ox, oy) = board_origin(Rect::new(0, 0, W, 50));
+        let (x, y) = cell_screen(ox, oy, 0, 4);
+        let (x, y) = (x + CELL_W / 2, y + CELL_H / 2);
+        assert_eq!(shown[(x, y)].symbol(), "７");
+        assert_eq!(shown[(x + 1, y)].symbol(), plain[(x + 1, y)].symbol());
+        assert_eq!(
+            shown[(x + 1, y)],
+            plain[(x + 1, y)],
+            "the digit's other half"
+        );
+        for x in [x - 1, x + 2] {
+            assert_eq!(shown[(x, y)].symbol(), "╍", "the line runs on either side");
+        }
+    }
+
+    /// Your easy game, with the tutor explaining `t` at `stage`.
+    fn app_explaining(t: Technique, stage: u8) -> App {
+        let (puzzle, solution) = test_board();
+        let mut app = App::new(Store::none());
+        app.start_game(Game::new(Difficulty::Easy, puzzle, solution));
+        let step = example(t)
+            .unwrap_or_else(|| panic!("{t:?} has no example"))
+            .step;
+        app.tutor = Some(Tutor {
+            mode: NoteMode::Full,
+            advice: Advice::Step(step),
+            stage: TutorStage::Explain { stage },
+        });
+        app
+    }
+
+    /// The text inside the side panel, rows joined, for a screen `w` wide.
+    fn panel_text(lines: &[String], w: u16) -> String {
+        let (ox, _) = board_origin(Rect::new(0, 0, w, 50));
+        let x = usize::from(ox + BOARD_W + PANEL_GAP + 2);
+        lines
             .iter()
-            .filter(|h| matches!(h.action, Some(Action::Board(BoardAction::Select(..)))))
-            .count();
-        assert_eq!(selects, 81, "every cell stays clickable");
+            .map(|l| {
+                l.chars()
+                    .skip(x)
+                    .take(TEXT_W)
+                    .collect::<String>()
+                    .trim()
+                    .to_string()
+            })
+            .filter(|l| !l.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[test]
+    fn explain_shows_the_example_not_your_game() {
+        let t = Technique::Pointing;
+        let app = app_explaining(t, 2);
+        let ex = example(t).unwrap();
+        let buf = screen(&app, W, 50);
+        let (lines, hits) = draw(&app, W, 50);
+        let (ox, oy) = board_origin(Rect::new(0, 0, W, 50));
+
+        let header = text(&lines[..usize::from(oy)]);
+        assert!(
+            header.contains(" EXAMPLE   Pointing, on a sample board, not your game"),
+            "{header}"
+        );
+        assert!(
+            header.contains("Pointing  ·  step 3 of 3   ← → steps through it"),
+            "{header}"
+        );
+        let badge = lines.iter().position(|l| l.contains("EXAMPLE")).unwrap();
+        let bx = lines[badge].chars().position(|c| c == 'E').unwrap() as u16;
+        assert_eq!(buf[(bx, badge as u16)].bg, VIOLET);
+        assert_eq!(buf[(bx, badge as u16)].fg, BG);
+
+        assert_eq!(buf[(ox, oy)].symbol(), "┏");
+        assert_eq!(buf[(ox, oy)].fg, VIOLET, "a violet frame");
+        for i in 0..CELLS {
+            let (x, y) = cell_screen(ox, oy, i / 9, i % 9);
+            let centre = buf[(x + CELL_W / 2, y + CELL_H / 2)].symbol();
+            let v = ex.values[i];
+            if v != 0 {
+                let digit = char::from_u32(0xFF10 + u32::from(v)).unwrap();
+                assert_eq!(centre, digit.to_string(), "{}", rc(i));
+            } else {
+                assert!(!centre.starts_with(|c| ('０'..='９').contains(&c)));
+            }
+        }
+        assert_eq!(selects(&hits), 0, "the example can't be played");
+
+        let pane = panel_text(&lines, W);
+        assert!(text(&lines).contains("╭ Pointing ─"));
+        for (k, step) in lesson(t).steps.iter().enumerate() {
+            assert!(pane.contains(&format!("{} {step}", k + 1)), "{pane}");
+        }
+        assert!(pane.contains(&format!(" {}", lesson(t).roles.0)), "{pane}");
+        assert!(pane.contains("removed"), "{pane}");
+        assert!(!pane.contains("Going by placed digits"), "{pane}");
+        for want in [Action::Tutor, Action::CloseTutor] {
+            assert!(hits.iter().any(|h| h.action == Some(want)), "{want:?}");
+        }
+        // The arrows' line: a click on the left arrow steps back, and
+        // anywhere else on it steps on.
+        let y = lines.iter().position(|l| l.contains("← →  step")).unwrap();
+        let x = lines[y].chars().position(|c| c == '←').unwrap();
+        let click = |x: usize| hit_at(&hits, x as u16, y as u16);
+        assert_eq!(click(x), Some(Action::ExampleStep(-1)));
+        assert_eq!(click(x + 2), Some(Action::ExampleStep(1)));
+        assert_eq!(click(x + 6), Some(Action::ExampleStep(1)));
+        assert!(
+            !hits
+                .iter()
+                .any(|h| matches!(h.action, Some(Action::Board(_))))
+        );
+        let footer = &lines[usize::from(oy + BOARD_H)];
+        assert!(footer.contains("show me in my game"), "{footer}");
+        assert!(!footer.contains("fill"), "{footer}");
+    }
+
+    #[test]
+    fn explain_steps_through_the_example() {
+        let t = Technique::XYWing;
+        let ex = example(t).unwrap();
+        let Effect::Eliminate(removals) = &ex.step.effect else {
+            panic!("an XY-Wing eliminates")
+        };
+        let &(cell, mask) = removals.first().unwrap();
+        let key = ex.step.pattern.marks.iter().find(|m| m.role == Role::Key);
+        let key = key.unwrap();
+        let (ox, oy) = board_origin(Rect::new(0, 0, W, 50));
+        let at = |cell: usize, digit: u8| {
+            let (x, y) = cell_screen(ox, oy, cell / 9, cell % 9);
+            slot(x, y, digit)
+        };
+        let (kx, ky) = at(key.cell, key.digit);
+        let (rx, ry) = at(cell, mask.trailing_zeros() as u8);
+        let stage = |n| screen(&app_explaining(t, n), W, 50);
+        let first = stage(0);
+        assert_ne!(first[(kx, ky)].bg, ACCENT, "no chips yet");
+        assert_ne!(first[(rx, ry)].fg, RED);
+        let second = stage(1);
+        assert_eq!(second[(kx, ky)].bg, ACCENT, "now the chips");
+        assert_ne!(second[(rx, ry)].fg, RED);
+        let third = stage(2);
+        assert_eq!(third[(rx, ry)].fg, RED, "and last what goes");
+        let (lines, _) = draw(&app_explaining(t, 0), W, 50);
+        assert!(text(&lines).contains("step 1 of 3"));
+    }
+
+    #[test]
+    fn explain_fits_the_minimum_terminal() {
+        for &t in Technique::ALL {
+            let (lines, hits) = draw(&app_explaining(t, 2), MIN_W, MIN_H);
+            let screen = text(&lines);
+            assert!(screen.contains("EXAMPLE"), "{t:?}");
+            let pane = panel_text(&lines, MIN_W);
+            for (k, step) in lesson(t).steps.iter().enumerate() {
+                assert!(pane.contains(&format!("{} {step}", k + 1)), "{t:?}: {pane}");
+            }
+            for want in ["← →  step", "show me in my game", "Esc  back to solving"] {
+                assert!(pane.contains(want), "{t:?}: {pane}");
+            }
+            assert!(!pane.contains('…'), "{t:?}: {pane}");
+            assert_eq!(selects(&hits), 0, "{t:?}");
+        }
     }
 }
