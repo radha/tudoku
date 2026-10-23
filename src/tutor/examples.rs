@@ -16,13 +16,6 @@ const EXAMPLES: &str = include_str!("examples.txt");
 /// The search stops looking for a technique once it has seen this many.
 const ENOUGH: usize = 25;
 
-/// Strategies an easier one always beats to it, so the solver never names
-/// them and their example is a board where they apply. Once no naked pair
-/// is left, two cells of a Remote Pair that see each other are their
-/// house's only two spots for each digit, so Simple Colouring (or
-/// something easier) finds whatever the Remote Pair does.
-pub const NEVER_FIRST: &[Technique] = &[Technique::RemotePair];
-
 /// A sample board and the step the strategy finds on it.
 pub struct Example {
     pub values: Board,
@@ -82,83 +75,45 @@ fn line(t: Technique, grid: &Grid) -> String {
 ///
 /// Every state of every solve where a technique is the easiest step is a
 /// candidate; the best has the fewest empty cells, then the fewest marked
-/// candidates, so the pattern stands out on a quiet board. A strategy in
-/// [`NEVER_FIRST`] is never the easiest step, so every state where it
-/// applies at all is a candidate instead, and the best is the one whose
-/// easiest step is hardest: no single or pair is waiting there, so the
-/// pattern is needed as nearly as it can be.
+/// candidates, so the pattern stands out on a quiet board. Only states
+/// where the tutor itself would name the technique count: a pattern an
+/// easier one would catch first is often just smaller ones side by side,
+/// like a hidden pair and a hidden single passing for a hidden triple.
 pub fn find_examples(wanted: &[Technique], seed: u64, max_puzzles: usize) -> Vec<String> {
-    let (beaten, named): (Vec<Technique>, Vec<Technique>) =
-        wanted.iter().partition(|t| NEVER_FIRST.contains(t));
-    // Only where the tutor itself would name the technique: a pattern an
-    // easier one would catch first is often just smaller ones side by
-    // side, like a hidden pair and a hidden single passing for a hidden
-    // triple.
-    let mut found = search(&named, seed, max_puzzles, ENOUGH, |_, next, t| {
-        (next.technique == t).then(|| next.clone())
-    });
-    found.extend(search(
-        &beaten,
-        seed,
-        max_puzzles,
-        usize::MAX,
-        |grid, _, t| grid.find(t),
-    ));
-    let mut lines = Vec::new();
-    for &t in wanted {
-        let at = named.iter().chain(&beaten).position(|&u| u == t);
-        match at.and_then(|k| found[k].clone()) {
-            Some(line) => lines.push(line),
-            None => eprintln!("no example found for {}", t.name()),
-        }
-    }
-    lines
-}
-
-/// The best example line for each `wanted` technique over the states of
-/// up to `max_puzzles` dealt puzzles, counting a state for `t` when `step`
-/// gives a step there (from the grid, the solver's next step and `t`), and
-/// stopping once each technique has had `enough`. The best has the
-/// hardest next step, then the fewest empty cells, then the fewest marks.
-fn search(
-    wanted: &[Technique],
-    seed: u64,
-    max_puzzles: usize,
-    enough: usize,
-    step: impl Fn(&Grid, &Step, Technique) -> Option<Step>,
-) -> Vec<Option<String>> {
     let mut rng = StdRng::seed_from_u64(seed);
     let mut seen = vec![0; wanted.len()];
     // (rank, line) of the best candidate so far.
-    type Ranked = ((usize, usize, usize), String);
+    type Ranked = ((usize, usize), String);
     let mut best: Vec<Option<Ranked>> = vec![None; wanted.len()];
     for _ in 0..max_puzzles {
-        if seen.iter().all(|&n| n >= enough) {
+        if seen.iter().all(|&n| n >= ENOUGH) {
             break;
         }
         let solution = sudoku::full_solution(&mut rng);
         let puzzle = sudoku::dig(&solution, CELLS, &mut rng);
         let mut grid = Grid::new(&puzzle);
         while let Some(next) = grid.next_step() {
-            for (k, &t) in wanted.iter().enumerate() {
-                if seen[k] >= enough {
-                    continue;
-                }
-                let Some(found) = step(&grid, &next, t) else {
-                    continue;
-                };
+            if let Some(k) = wanted.iter().position(|&t| t == next.technique)
+                && seen[k] < ENOUGH
+            {
                 seen[k] += 1;
-                let easier = Technique::ALL.len() - next.technique as usize;
                 let empty = grid.values().iter().filter(|&&v| v == 0).count();
-                let rank = (easier, empty, found.pattern.marks.len());
+                let rank = (empty, next.pattern.marks.len());
                 if best[k].as_ref().is_none_or(|b| rank < b.0) {
-                    best[k] = Some((rank, line(t, &grid)));
+                    best[k] = Some((rank, line(next.technique, &grid)));
                 }
             }
             grid.apply(&next);
         }
     }
-    best.into_iter().map(|b| b.map(|(_, line)| line)).collect()
+    let mut lines = Vec::new();
+    for (&t, best) in wanted.iter().zip(best) {
+        match best {
+            Some((_, line)) => lines.push(line),
+            None => eprintln!("no example found for {}", t.name()),
+        }
+    }
+    lines
 }
 
 #[cfg(test)]
@@ -173,13 +128,8 @@ mod tests {
             assert_eq!(e.step.technique, t);
             let grid = Grid::with_candidates(&e.values, &e.cands);
             let next = grid.next_step().unwrap_or_else(|| panic!("{t:?}"));
-            if NEVER_FIRST.contains(&t) {
-                // An easier step always comes first there.
-                assert!(next.technique < t, "{t:?}");
-            } else {
-                // And it is the step the tutor itself would name there.
-                assert_eq!(next, e.step, "{t:?}");
-            }
+            // And it is the step the tutor itself would name there.
+            assert_eq!(next, e.step, "{t:?}");
         }
     }
 

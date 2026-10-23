@@ -622,21 +622,6 @@ mod tests {
     }
 
     #[test]
-    fn simple_colouring_beats_every_remote_pair() {
-        // Once no naked pair is left, two cells of the group that see each
-        // other are their house's only spots for each digit, so colouring
-        // either digit traps or wraps whatever the Remote Pair clears.
-        let mut seen = 0;
-        dealt_states(|grid, step, _| {
-            if grid.find(Technique::RemotePair).is_some() {
-                seen += 1;
-                assert!(step.technique <= Technique::SimpleColouring, "{step:?}");
-            }
-        });
-        assert!(seen > 0);
-    }
-
-    #[test]
     fn x_chain_of_five_links() {
         // On 4, rows 1, 4 and 7 hold just two spots each:
         // r1c1=r1c6 -column 6- r4c6=r4c9 -column 9- r7c9=r7c3.
