@@ -12,10 +12,11 @@ use ratatui::{
 
 use std::time::Duration;
 
-use crate::app::{Action, App, BoardAction, MenuRow, Overlay};
+use crate::app::{Action, App, BoardAction, MenuRow, Overlay, TutorStage};
 use crate::deal::Difficulty;
 use crate::game::Game;
 use crate::sudoku::{box_of, idx};
+use crate::tutor::Advice;
 
 mod tutor;
 
@@ -53,6 +54,12 @@ const PEN: Color = Color::Rgb(255, 196, 92);
 const ACCENT: Color = Color::Rgb(64, 216, 240);
 const GREEN: Color = Color::Rgb(84, 222, 150);
 const RED: Color = Color::Rgb(255, 112, 112);
+const VIOLET: Color = Color::Rgb(176, 140, 255);
+// The tutor's pattern board: placed digits that don't matter, the cells a
+// pattern is built on, and the houses it looks along.
+const DIM: Color = Color::Rgb(66, 74, 96);
+const PAT_BG: Color = Color::Rgb(22, 52, 64);
+const BAND_BG: Color = Color::Rgb(27, 33, 50);
 
 // ------------------------------------------------------------ sizing
 
@@ -931,7 +938,31 @@ fn draw_game(frame: &mut Frame, area: Rect, app: &App, game: &Game, hits: &mut V
     }
 
     let labels_y = if header_h(area) > 2 { oy - 1 } else { oy };
-    draw_board(frame, game, ox, oy, labels_y, hits);
+    let focus = app.tutor.as_ref().and_then(|t| match (&t.advice, t.stage) {
+        (Advice::Step(step), TutorStage::ShowMe) => Some(step),
+        _ => None,
+    });
+    if let Some(step) = focus {
+        let (_, grid) = crate::tutor::read(&game.values, &game.notes);
+        let view = tutor::FocusView {
+            values: &game.values,
+            given: &game.given,
+            cands: grid.cands(),
+            step,
+            stage: 2,
+            frame: GRID_BOX,
+        };
+        tutor::draw_focus_board(frame, ox, oy, labels_y, &view);
+        for r in 0..9 {
+            for c in 0..9 {
+                let (x, y) = cell_screen(ox, oy, r, c);
+                let rect = Rect::new(x, y, CELL_W, CELL_H);
+                push_hit(hits, rect, Some(Action::Board(BoardAction::Select(r, c))));
+            }
+        }
+    } else {
+        draw_board(frame, game, ox, oy, labels_y, hits);
+    }
     let panel_x = ox + BOARD_W + PANEL_GAP;
     if let Some(t) = &app.tutor {
         // The tutor takes the buttons' place, and the number pad moves up
@@ -1026,7 +1057,7 @@ mod tests {
         app
     }
 
-    fn draw(app: &App, w: u16, h: u16) -> (Vec<String>, Vec<Hit>) {
+    pub(super) fn draw(app: &App, w: u16, h: u16) -> (Vec<String>, Vec<Hit>) {
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
         let mut hits = Vec::new();
         terminal.draw(|f| hits = render(f, app)).unwrap();
@@ -1041,12 +1072,12 @@ mod tests {
         (lines, hits)
     }
 
-    fn text(lines: &[String]) -> String {
+    pub(super) fn text(lines: &[String]) -> String {
         lines.join("\n")
     }
 
     /// Screen width for tests: a little roomier than the minimum.
-    const W: u16 = 110;
+    pub(super) const W: u16 = 110;
 
     fn cell_hits(hits: &[Hit]) -> usize {
         hits.iter()
@@ -1055,7 +1086,7 @@ mod tests {
     }
 
     /// Text row `dy` of a cell's interior, as drawn `W` columns wide.
-    fn cell_row(lines: &[String], row: usize, col: usize, dy: u16) -> String {
+    pub(super) fn cell_row(lines: &[String], row: usize, col: usize, dy: u16) -> String {
         let (ox, oy) = board_origin(Rect::new(0, 0, W, 50));
         let (x, y) = cell_screen(ox, oy, row, col);
         lines[usize::from(y + dy)]
@@ -1066,7 +1097,7 @@ mod tests {
     }
 
     /// The glyph drawn at board offset `(gx, gy)`, `W` columns wide.
-    fn board_char(lines: &[String], gx: u16, gy: u16) -> char {
+    pub(super) fn board_char(lines: &[String], gx: u16, gy: u16) -> char {
         let (ox, oy) = board_origin(Rect::new(0, 0, W, 50));
         let line = &lines[usize::from(oy + gy)];
         line.chars().nth(usize::from(ox + gx)).unwrap()

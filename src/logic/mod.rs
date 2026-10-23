@@ -106,7 +106,7 @@ pub struct Mark {
 /// ends can't both be true.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinkKind {
-    #[allow(dead_code)] // the chain techniques draw these
+    #[allow(dead_code)] // the chain techniques build these
     Strong,
     Weak,
 }
@@ -229,7 +229,6 @@ impl Grid {
         &self.values
     }
 
-    #[allow(dead_code)] // the tutor reads these
     pub fn cands(&self) -> &[u16; CELLS] {
         &self.cands
     }
