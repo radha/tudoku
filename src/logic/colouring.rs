@@ -15,6 +15,11 @@ struct Chain {
     pairs: Vec<(usize, usize)>,
 }
 
+/// "is" for one cell, "are" for several.
+fn are(cells: &[usize]) -> &'static str {
+    if cells.len() == 1 { "is" } else { "are" }
+}
+
 impl Grid {
     /// Colour the chains of conjugate pairs on each digit. A colour that
     /// sees itself can't be the digit (wrap); a cell seeing both colours
@@ -135,12 +140,14 @@ impl Grid {
             });
             let Some((a, b)) = clash else { continue };
             let why = format!(
-                "Along these pairs, {digit} alternates: {} is one colour and {} the other, \
+                "Along these pairs, {digit} alternates: {} {} one colour and {} {} the other, \
                  and one colour is all {digit}. {} and {} are one colour and see each other, \
                  so that colour can't be all {digit} (Simple Colouring wrap). \
                  The other colour is, and {} can't be {digit}.",
                 cell_list(&chain.colours[0]),
+                are(&chain.colours[0]),
                 cell_list(&chain.colours[1]),
+                are(&chain.colours[1]),
                 rc(a),
                 rc(b),
                 cell_list(cells),
@@ -168,12 +175,24 @@ impl Grid {
             })
             .collect();
         let why = format!(
-            "Along these pairs, {digit} alternates: {} is one colour and {} the other, \
-             and one colour is all {digit}. {} sees both colours, so it sees a {digit} \
+            "Along these pairs, {digit} alternates: {} {} one colour and {} {} the other, \
+             and one colour is all {digit}. {} {} both colours, so {} a {digit} \
              either way (Simple Colouring trap) and can't be {digit}.",
             cell_list(&chain.colours[0]),
+            are(&chain.colours[0]),
             cell_list(&chain.colours[1]),
+            are(&chain.colours[1]),
             cell_list(&targets),
+            if targets.len() == 1 {
+                "sees"
+            } else {
+                "each see"
+            },
+            if targets.len() == 1 {
+                "it sees"
+            } else {
+                "they see"
+            },
         );
         let pattern = self.chain_pattern(digit, chain, &[(0, Role::Key), (1, Role::Other)]);
         let removals = targets.into_iter().map(|c| (c, bit)).collect();
@@ -207,6 +226,13 @@ mod tests {
         ]);
         let step = grid.colouring().unwrap();
         assert!(step.why.contains("trap"), "{}", step.why);
+        assert!(
+            step.why.contains("r1c1 and r5c6 are one colour")
+                && step.why.contains("r1c6 and r5c2 are the other")
+                && step.why.contains("r2c2 sees both colours, so it sees a 4"),
+            "{}",
+            step.why
+        );
         assert_eq!(step.pattern.digit, Some(D));
         assert_eq!(step.pattern.links.len(), 3);
         assert!(
