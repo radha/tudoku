@@ -276,13 +276,30 @@ pub fn dig<R: Rng>(solved: &Board, target: usize, rng: &mut R) -> Board {
         }
         let backup = puzzle[i];
         puzzle[i] = 0;
-        if is_unique(&puzzle) {
+        // The puzzle's one solution is `solved`, so a second solution
+        // would have to put another digit here.
+        if only_digit_fits(&puzzle, i, backup) {
             holes += 1;
         } else {
             puzzle[i] = backup;
         }
     }
     puzzle
+}
+
+/// True when no digit but `digit` in empty cell `cell` leaves `puzzle`
+/// solvable.
+fn only_digit_fits(puzzle: &Board, cell: usize, digit: u8) -> bool {
+    let mut solver = Solver::new(puzzle);
+    let others = solver.candidates(cell) & !(1 << digit);
+    (1..=9u8).filter(|v| others & (1 << v) != 0).all(|v| {
+        solver.place(cell, v);
+        if solver.solve() {
+            return false;
+        }
+        solver.lift(cell);
+        true
+    })
 }
 
 /// Parse an 81-character string of digits (`0` or `.` for empty).
