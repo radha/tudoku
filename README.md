@@ -28,7 +28,7 @@ hardest one the puzzle needs:
 | Medium | pointing, claiming, naked & hidden pairs and triples                            | ~22-27 |
 | Hard   | quads, X-Wing, Skyscraper, 2-String Kite, Crane, Empty Rectangle, XY-Wing       | ~22-27 |
 | Master | Swordfish, Jellyfish, finned fish, XYZ/W/WXYZ-Wing, Simple Colouring, Unique Rectangle, BUG+1 | ~22-27 |
-| Zen    | Remote Pair, X-Chain, XY-Chain, AIC, ALS-XZ, ALS-XY-Wing, Sue de Coq, Death Blossom | ~22-27 |
+| Zen    | X-Chain, XY-Chain, AIC, ALS-XZ, ALS-XY-Wing, Sue de Coq, Death Blossom          | ~22-27 |
 
 Every puzzle has exactly one solution (cells are removed from a random
 complete grid only while a solver confirms uniqueness) and can be finished
@@ -93,8 +93,8 @@ The tutor knows 36 strategies, easiest first within each level:
 - **Zen:** Remote Pair, X-Chain, XY-Chain, AIC, ALS-XZ, ALS-XY-Wing,
   Sue de Coq, Death Blossom
 
-Remote Pair is taught, but it is rarely the next step: naked pairs and
-Simple Colouring usually get there first.
+Remote Pair is in the solver, but it never comes up in practice: naked
+pairs and Simple Colouring always get there first.
 
 ## Controls
 
