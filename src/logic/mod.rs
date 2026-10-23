@@ -735,34 +735,7 @@ mod tests {
     #[test]
     fn every_detector_is_sound_on_dealt_puzzles() {
         let mut found = [0; Technique::ALL.len()];
-        dealt_states(|grid, _, solution| {
-            for &t in Technique::ALL {
-                let Some(step) = grid.find(t) else { continue };
-                assert_eq!(step.technique, t);
-                assert_consistent(grid, &step);
-                found[t as usize] += 1;
-                match step.effect {
-                    Effect::Place { cell, digit } => {
-                        assert_eq!(
-                            solution[cell],
-                            digit,
-                            "{t:?} placed {digit} at {}",
-                            rc(cell)
-                        );
-                    }
-                    Effect::Eliminate(removals) => {
-                        for (cell, mask) in removals {
-                            assert_eq!(
-                                mask & (1 << solution[cell]),
-                                0,
-                                "{t:?} removed the answer at {}",
-                                rc(cell)
-                            );
-                        }
-                    }
-                }
-            }
-        });
+        dealt_states(|grid, _, solution| assert_sound(grid, solution, &mut found));
         // The run reaches well past the singles.
         use Technique::*;
         for t in [
@@ -794,6 +767,88 @@ mod tests {
             DeathBlossom,
         ] {
             assert!(found[t as usize] > 0, "{t:?} never fired: {found:?}");
+        }
+    }
+
+    /// Run every detector on `grid` and check what each finds against
+    /// `solution`: placements match it and eliminations never remove its
+    /// digit. Counts the steps found in `found`.
+    fn assert_sound(grid: &Grid, solution: &Board, found: &mut [usize; Technique::ALL.len()]) {
+        for &t in Technique::ALL {
+            let Some(step) = grid.find(t) else { continue };
+            assert_eq!(step.technique, t);
+            assert_consistent(grid, &step);
+            found[t as usize] += 1;
+            match step.effect {
+                Effect::Place { cell, digit } => {
+                    assert_eq!(
+                        solution[cell],
+                        digit,
+                        "{t:?} placed {digit} at {}",
+                        rc(cell)
+                    );
+                }
+                Effect::Eliminate(removals) => {
+                    for (cell, mask) in removals {
+                        assert_eq!(
+                            mask & (1 << solution[cell]),
+                            0,
+                            "{t:?} removed the answer at {}",
+                            rc(cell)
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The detectors stay sound on notes a player might keep, not just the
+    /// solver's own candidates. The tutor reads full notes as candidates
+    /// once it has checked they keep every cell's answer, so at the
+    /// solver's states of seeded puzzles the notes here are any candidates
+    /// the placed digits leave open that keep each answer: the solver's
+    /// with some of what it cleared put back, or a random pick.
+    #[test]
+    fn every_detector_is_sound_on_player_notes() {
+        use rand::rngs::StdRng;
+        use rand::{RngExt, SeedableRng};
+        let mut rng = StdRng::seed_from_u64(424242);
+        let mut found = [0; Technique::ALL.len()];
+        for _ in 0..10 {
+            let solution = sudoku::full_solution(&mut rng);
+            let puzzle = sudoku::dig(&solution, CELLS, &mut rng);
+            let mut grid = Grid::new(&puzzle);
+            let mut states = Vec::new();
+            while let Some(step) = grid.next_step() {
+                states.push(grid.clone());
+                grid.apply(&step);
+            }
+            for state in states.iter().step_by(2) {
+                for put_back in [true, false] {
+                    let notes = std::array::from_fn(|i| {
+                        let open = candidates_mask(&state.values, i);
+                        let answer = 1 << solution[i];
+                        let (sure, maybe) = if put_back {
+                            (state.cands[i], open & !state.cands[i])
+                        } else {
+                            (answer, open & !answer)
+                        };
+                        bits(maybe)
+                            .filter(|_| rng.random_bool(0.5))
+                            .fold(sure, |m, d| m | 1 << d)
+                    });
+                    let noted = Grid::with_candidates(&state.values, &notes);
+                    assert_sound(&noted, &solution, &mut found);
+                }
+            }
+        }
+        // Every detector but BUG+1 finds something to check. BUG+1 needs
+        // all but one cell down to two candidates, which random notes
+        // don't leave.
+        for &t in Technique::ALL {
+            if t != Technique::BugPlusOne {
+                assert!(found[t as usize] > 0, "{t:?} never fired: {found:?}");
+            }
         }
     }
 
