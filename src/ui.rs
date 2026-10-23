@@ -1420,6 +1420,29 @@ mod tests {
     }
 
     #[test]
+    fn level_menus_show_every_blurb_and_best_time() {
+        let with_bests = |mut app: App| {
+            for d in Difficulty::ALL {
+                app.stats.record(d, Duration::from_secs(553), 0);
+            }
+            app
+        };
+        let title = with_bests(App::new(Store::none()));
+        let mut picker = with_bests(app_with_game());
+        picker.overlays.push(Overlay::Levels { cursor: 0 });
+        for (menu, app) in [("title", title), ("picker", picker)] {
+            let (lines, _) = draw(&app, MIN_W, MIN_H);
+            for d in Difficulty::ALL {
+                let name = format!("{}. {}", d.index() + 1, d.name());
+                let row = lines.iter().find(|l| l.contains(&name));
+                let row = row.unwrap_or_else(|| panic!("{menu}: no {name}"));
+                assert!(row.contains(d.blurb()), "{menu}: {row}");
+                assert!(row.contains("best 09:13"), "{menu}: {row}");
+            }
+        }
+    }
+
+    #[test]
     fn number_pad_lines_up_with_the_buttons() {
         assert_eq!(DIGIT_GRID_W, BTN_GRID_W);
     }
