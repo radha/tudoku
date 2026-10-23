@@ -956,13 +956,12 @@ fn draw_game(frame: &mut Frame, area: Rect, app: &App, game: &Game, hits: &mut V
 
     let labels_y = if header_h(area) > 2 { oy - 1 } else { oy };
     if let Some((ex, stage)) = &example {
-        // A sample board: every placed digit is a given, and nothing on
-        // it can be clicked, since it isn't your game.
-        let given = std::array::from_fn(|i| ex.values[i] != 0);
+        // A sample board: nothing on it is selected or can be clicked,
+        // since it isn't your game.
         let view = tutor::FocusView {
             values: &ex.values,
-            given: &given,
             cands: &ex.cands,
+            selected: None,
             step: &ex.step,
             stage: *stage,
             frame: VIOLET,
@@ -972,8 +971,8 @@ fn draw_game(frame: &mut Frame, area: Rect, app: &App, game: &Game, hits: &mut V
         let (_, grid) = crate::tutor::read(&game.values, &game.notes);
         let view = tutor::FocusView {
             values: &game.values,
-            given: &game.given,
             cands: grid.cands(),
+            selected: Some(game.selected),
             step,
             stage: 2,
             frame: GRID_BOX,

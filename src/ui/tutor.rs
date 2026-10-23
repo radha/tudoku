@@ -12,9 +12,9 @@ use ratatui::{
 };
 
 use super::{
-    ACCENT, BAND_BG, BG, BOARD_H, BOARD_W, CELL_H, CELL_W, DIM, ERR_BG, GREEN, GRID_THIN, Hit, INK,
-    MUTED, NOTE, PANEL_W, PAT_BG, RED, SURFACE, VIOLET, cell_screen, grid_glyph, popup_block,
-    push_hit,
+    ACCENT, BAND_BG, BG, BOARD_H, BOARD_W, BRIGHT, CELL_H, CELL_W, DIM, ERR_BG, GREEN, GRID_THIN,
+    Hit, INK, MUTED, NOTE, NOTE_SEL, PANEL_W, PAT_BG, RED, SEL_BG, SURFACE, VIOLET, cell_screen,
+    grid_glyph, popup_block, push_hit,
 };
 use crate::app::{Action, EXAMPLE_STAGES, Tutor, TutorStage};
 use crate::logic::{Effect, LinkKind, Role, Step, Technique, digit_list, rc};
@@ -425,8 +425,9 @@ fn effect_lines(lines: &mut Vec<Line<'static>>, step: &Step) {
 /// step's pattern.
 pub(super) struct FocusView<'a> {
     pub values: &'a Board,
-    pub given: &'a [bool; CELLS],
     pub cands: &'a [u16; CELLS],
+    /// The cell you have selected, on your own board; none on an example.
+    pub selected: Option<(usize, usize)>,
     pub step: &'a Step,
     /// 0 houses and cells, 1 adds marks and links, 2 adds the effect.
     pub stage: u8,
@@ -510,7 +511,12 @@ pub(super) fn draw_focus_board(
         for c in 0..9 {
             let i = r * 9 + c;
             let (x, y) = cell_screen(ox, oy, r, c);
-            let bg = if struck && removed[i] != 0 {
+            // The selection shows as on the normal board, so you can move
+            // to a cell with the pattern still in view.
+            let is_sel = view.selected == Some((r, c));
+            let bg = if is_sel {
+                SEL_BG
+            } else if struck && removed[i] != 0 {
                 ERR_BG
             } else if pat[i] {
                 PAT_BG
@@ -523,14 +529,21 @@ pub(super) fn draw_focus_board(
             let v = view.values[i];
             if v != 0 {
                 let on = pattern.digit == Some(v);
+                let fg = if is_sel {
+                    BRIGHT
+                } else if on {
+                    INK
+                } else {
+                    DIM
+                };
                 digits.push(Chip {
                     x: x + CELL_W / 2,
                     y: y + CELL_H / 2,
                     ch: char::from_u32(0xFF10 + u32::from(v)).unwrap(),
                     style: Style::default()
-                        .fg(if on { INK } else { DIM })
+                        .fg(fg)
                         .bg(bg)
-                        .add_modifier(if on {
+                        .add_modifier(if on || is_sel {
                             Modifier::BOLD
                         } else {
                             Modifier::empty()
@@ -551,7 +564,9 @@ pub(super) fn draw_focus_board(
                         x: sx,
                         y: sy,
                         ch: char::from(b'0' + d),
-                        style: Style::default().fg(NOTE).bg(bg),
+                        style: Style::default()
+                            .fg(if is_sel { NOTE_SEL } else { NOTE })
+                            .bg(bg),
                     });
                 }
             }
@@ -598,10 +613,6 @@ pub(super) fn draw_focus_board(
             }
         }
     }
-    // `given` only matters to the normal board; the pattern treats every
-    // placed digit alike.
-    let _ = view.given;
-
     // Grid lines, on the board's own surface.
     for gy in 0..BOARD_H {
         for gx in 0..BOARD_W {
@@ -825,6 +836,61 @@ mod tests {
         hits.iter()
             .filter(|h| matches!(h.action, Some(Action::Board(BoardAction::Select(..)))))
             .count()
+    }
+
+    #[test]
+    fn show_me_draws_the_selected_cell() {
+        let (mut app, step) = xy_wing_app();
+        let (ox, oy) = board_origin(Rect::new(0, 0, W, 50));
+        // A cell's top left corner: no candidate goes there, and a link
+        // through it keeps its background.
+        let bg = |buf: &Buffer, (r, c): (usize, usize)| {
+            let (x, y) = cell_screen(ox, oy, r, c);
+            buf[(x, y)].bg
+        };
+        let selected = |app: &App| app.game.as_ref().unwrap().selected;
+        let before = selected(&app);
+        assert_eq!(bg(&screen(&app, W, 50), before), SEL_BG);
+
+        app.apply(Action::Board(BoardAction::Move(0, 1)));
+        let after = selected(&app);
+        assert_ne!(after, before);
+        assert_eq!(
+            app.tutor.as_ref().map(|t| t.stage),
+            Some(TutorStage::ShowMe)
+        );
+        let buf = screen(&app, W, 50);
+        assert_eq!(bg(&buf, after), SEL_BG, "the selection moves");
+        assert_ne!(bg(&buf, before), SEL_BG);
+
+        // What the selected cell holds stays readable on it: a placed
+        // digit, and the candidates a removal leaves.
+        let game = app.game.as_ref().unwrap();
+        let placed = (0..CELLS).find(|&i| game.values[i] != 0).unwrap();
+        app.apply(Action::Board(BoardAction::Select(placed / 9, placed % 9)));
+        let buf = screen(&app, W, 50);
+        let (x, y) = cell_screen(ox, oy, placed / 9, placed % 9);
+        let digit = &buf[(x + CELL_W / 2, y + CELL_H / 2)];
+        assert_eq!((digit.fg, digit.bg), (BRIGHT, SEL_BG), "{}", rc(placed));
+        let Effect::Eliminate(removals) = &step.effect else {
+            panic!("an XY-Wing eliminates")
+        };
+        let (cell, mask) = removals[0];
+        let notes = app.game.as_ref().unwrap().notes[cell];
+        let kept = (1..=9u8).find(|&d| notes & !mask & (1 << d) != 0).unwrap();
+        app.apply(Action::Board(BoardAction::Select(cell / 9, cell % 9)));
+        let buf = screen(&app, W, 50);
+        let (x, y) = cell_screen(ox, oy, cell / 9, cell % 9);
+        let note = &buf[slot(x, y, kept)];
+        assert_eq!((note.fg, note.bg), (NOTE_SEL, SEL_BG), "{}", rc(cell));
+        let gone = &buf[slot(x, y, mask.trailing_zeros() as u8)];
+        assert_eq!((gone.fg, gone.bg), (RED, ERR_BG), "still struck");
+
+        // A worked example isn't your game: nothing on it is selected.
+        let buf = screen(&app_explaining(Technique::XYWing, 2), W, 50);
+        for i in 0..CELLS {
+            assert_ne!(bg(&buf, (i / 9, i % 9)), SEL_BG, "{}", rc(i));
+        }
     }
 
     #[test]
