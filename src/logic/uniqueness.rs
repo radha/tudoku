@@ -122,6 +122,9 @@ impl Grid {
         let targets: Vec<usize> = peers(a)
             .filter(|&c| sees(c, b) && self.cands[c] & z != 0)
             .collect();
+        if targets.is_empty() {
+            return None;
+        }
         let why = format!(
             "{} are only {}. If neither of {} and {} were {}, the four cells could swap {} \
              for a second solution, but the puzzle has just one (Unique Rectangle type 2). \

@@ -171,6 +171,9 @@ impl Grid {
                         .all(|side| side.iter().any(|&s| sees(c, s)))
             })
             .collect();
+        if targets.is_empty() {
+            return None;
+        }
         let why = format!(
             "Along these pairs, {digit} alternates: {} {} one colour and {} {} the other, \
              and one colour is all {digit}. {} {} both colours, so {} {} either way \

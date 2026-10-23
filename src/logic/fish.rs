@@ -25,13 +25,17 @@ impl Grid {
                     if cover.count_ones() != k {
                         continue;
                     }
-                    let removals = bits(cover)
+                    let removals: Vec<(usize, u16)> = bits(cover)
                         .flat_map(|c| {
                             (0..N)
                                 .filter(move |&l| set & 1 << l == 0)
                                 .map(move |l| (at(l, c), bit))
                         })
+                        .filter(|&(c, _)| self.cands[c] & bit != 0)
                         .collect();
+                    if removals.is_empty() {
+                        continue;
+                    }
                     let spots = bits(set).flat_map(|l| bits(lines[l]).map(move |c| at(l, c)));
                     // Rows are houses 0..N and columns N..2N.
                     let cover_houses = N - base;
@@ -90,23 +94,33 @@ impl Grid {
                         if cover & !union != 0 {
                             continue;
                         }
-                        let fins: Vec<usize> = bits(set)
-                            .flat_map(|l| bits(lines[l] & !cover).map(move |c| at(l, c)))
-                            .collect();
-                        let Some(&first) = fins.first() else { continue };
+                        // The base spots outside the cover lines.
+                        let fin_cells = || {
+                            bits(set)
+                                .flat_map(move |l| bits(lines[l] & !cover).map(move |c| at(l, c)))
+                        };
+                        let Some(first) = fin_cells().next() else {
+                            continue;
+                        };
                         let fin_box = box_of_cell(first);
-                        if fins.iter().any(|&f| box_of_cell(f) != fin_box) {
+                        if fin_cells().any(|f| box_of_cell(f) != fin_box) {
                             continue;
                         }
-                        let removals = bits(cover)
+                        let removals: Vec<(usize, u16)> = bits(cover)
                             .flat_map(|c| {
                                 (0..N)
                                     .filter(move |&l| set & 1 << l == 0)
                                     .map(move |l| at(l, c))
                             })
-                            .filter(|&cell| box_of_cell(cell) == fin_box)
+                            .filter(|&cell| {
+                                box_of_cell(cell) == fin_box && self.cands[cell] & bit != 0
+                            })
                             .map(|cell| (cell, bit))
                             .collect();
+                        if removals.is_empty() {
+                            continue;
+                        }
+                        let fins: Vec<usize> = fin_cells().collect();
                         let spots =
                             bits(set).flat_map(|l| bits(lines[l] & cover).map(move |c| at(l, c)));
                         let cover_houses = N - base;

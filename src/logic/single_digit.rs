@@ -93,6 +93,9 @@ impl Grid {
                                         && sees(c, b2)
                                 })
                                 .collect();
+                            if targets.is_empty() {
+                                continue;
+                            }
                             let why = format!(
                                 "In {}, {digit} is {} or {}; in {}, it is {} or {}. \
                                  {} and {} share {}, so they can't both be {digit}. \

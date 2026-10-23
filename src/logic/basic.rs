@@ -112,12 +112,15 @@ impl Grid {
                 targets.push(2 * N + box_of_cell(cells[0]));
             }
             for t in targets {
-                let removals = HOUSES[t]
+                let removals: Vec<(usize, u16)> = HOUSES[t]
                     .iter()
                     .map(|&c| usize::from(c))
-                    .filter(|c| !cells.contains(c))
+                    .filter(|&c| !cells.contains(&c) && self.cands[c] & bit != 0)
                     .map(|c| (c, bit))
                     .collect();
+                if removals.is_empty() {
+                    continue;
+                }
                 let pattern = Pattern {
                     digit: Some(digit),
                     houses: vec![h, t],
@@ -151,10 +154,13 @@ impl Grid {
                 if union.count_ones() != k {
                     continue;
                 }
-                let removals = (0..N)
-                    .filter(|&p| set & 1 << p == 0)
+                let removals: Vec<(usize, u16)> = (0..N)
+                    .filter(|&p| set & 1 << p == 0 && self.cands[cell(p)] & union != 0)
                     .map(|p| (cell(p), union))
                     .collect();
+                if removals.is_empty() {
+                    continue;
+                }
                 let cells: Vec<usize> = bits(set).map(cell).collect();
                 let why = format!(
                     "{} hold only {} between them, so nothing else in {} can be {}.",
@@ -197,6 +203,9 @@ impl Grid {
                     continue;
                 }
                 let cells: Vec<usize> = bits(spots).map(|p| usize::from(house[p])).collect();
+                if cells.iter().all(|&c| self.cands[c] & !digits == 0) {
+                    continue;
+                }
                 let removals = cells.iter().map(|&c| (c, !digits)).collect();
                 let why = format!(
                     "In {}, {} fit only in {}, so those cells can't hold anything else.",
