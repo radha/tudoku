@@ -192,6 +192,23 @@ pub fn lesson(t: Technique) -> Lesson {
             ],
             roles: ("removed digit", "bridge"),
         },
+        UniqueRectangle => Lesson {
+            steps: &[
+                "Four rectangle corners in two boxes fit the same two digits. If all four held only them, they could swap: two solutions. A puzzle has one.",
+                "Floor corners fit only them; roofs more. Type 1: three floors, so the roof isn't either digit. Type 2: roofs share an extra digit, so one has it; cells seeing both can't.",
+                "Type 4: in a house the roofs share, a floor digit fits only in them. One has it; the other digit would let all four swap.",
+            ],
+            roles: ("roof", "floor"),
+        },
+        BugPlusOne => Lesson {
+            steps: &[
+                "Look for a board where every empty cell fits two digits, except one that fits three.",
+                "Every digit fits exactly twice in each row, column and box, except one of that cell's digits: it fits three times in the cell's row, column and box.",
+                "Drop it from the cell, and every digit would fit exactly twice everywhere.",
+                "Such a grid has no solution or several, but a puzzle has one. So the cell is that digit.",
+            ],
+            roles: ("three-way cell", ""),
+        },
         Jellyfish => Lesson {
             steps: &[
                 "Find four rows where a digit fits in only two to four cells each.",

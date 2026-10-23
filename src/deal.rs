@@ -102,8 +102,8 @@ pub fn level_of(t: Technique) -> Difficulty {
         }
         NakedQuad | HiddenQuad | XWing | Skyscraper | TwoStringKite | Crane | EmptyRectangle
         | XYWing => Difficulty::Hard,
-        Swordfish | XYZWing | WWing | FinnedXWing | Jellyfish | FinnedSwordfish | WXYZWing
-        | FinnedJellyfish => Difficulty::Master,
+        Swordfish | XYZWing | WWing | FinnedXWing | UniqueRectangle | BugPlusOne | Jellyfish
+        | FinnedSwordfish | WXYZWing | FinnedJellyfish => Difficulty::Master,
     }
 }
 
