@@ -77,23 +77,20 @@ impl Grid {
     /// Sashimi is the case where a base line has fewer than two spots in
     /// the cover lines, so it leans on its fin.
     pub(super) fn finned_fish(&self, k: u32, technique: Technique) -> Option<Step> {
-        let covers: Vec<u16> = subsets((1 << N) - 1, k).collect();
         for digit in 1..=9u8 {
             let bit = 1 << digit;
             for base in [0, N] {
                 let lines: [u16; N] =
                     std::array::from_fn(|l| self.positions(&HOUSES[base + l], bit));
+                // A base line's spots are all in the `k` cover lines or the
+                // three lines the fins' box spans.
                 let eligible = (0..N)
-                    .filter(|&l| lines[l] != 0)
+                    .filter(|&l| lines[l] != 0 && lines[l].count_ones() <= k + 3)
                     .fold(0u16, |m, l| m | 1 << l);
                 let at = move |l: usize, c: usize| if base == 0 { idx(l, c) } else { idx(c, l) };
                 for set in subsets(eligible, k) {
                     let union = bits(set).fold(0, |m, l| m | lines[l]);
-                    for &cover in &covers {
-                        // Every cover line holds a base spot.
-                        if cover & !union != 0 {
-                            continue;
-                        }
+                    for cover in fin_covers(union, k) {
                         // The base spots outside the cover lines.
                         let fin_cells = || {
                             bits(set)
@@ -173,11 +170,60 @@ impl Grid {
     }
 }
 
+/// The cover lines a finned fish could use when its base lines' spots lie
+/// in the lines `union`, smallest first: `k` of those lines, each holding
+/// a base spot, with at least one spot left over as a fin. The fins share
+/// a box, so they lie in one band or stack, and the cover takes every
+/// spot outside it. That leaves a few covers to try, not every `k` lines.
+fn fin_covers(union: u16, k: u32) -> impl Iterator<Item = u16> {
+    let mut covers = [0u16; N];
+    let mut n = 0;
+    for chute in 0..3 {
+        let span = 0b111 << (3 * chute);
+        let outside = union & !span;
+        let Some(more) = k.checked_sub(outside.count_ones()) else {
+            continue;
+        };
+        for inside in subsets(union & span, more) {
+            let cover = outside | inside;
+            if cover != union && !covers[..n].contains(&cover) {
+                covers[n] = cover;
+                n += 1;
+            }
+        }
+    }
+    covers[..n].sort_unstable();
+    covers.into_iter().take(n)
+}
+
 #[cfg(test)]
 mod tests {
+    use super::fin_covers;
+    use crate::logic::subsets;
     use crate::logic::testing::{removals, staged};
     use crate::logic::{Role, Technique};
     use crate::sudoku::{N, idx};
+
+    #[test]
+    fn fin_covers_are_every_cover_leaving_fins_in_one_band_or_stack() {
+        for union in 0..1u16 << N {
+            for k in 2..=4 {
+                let every: Vec<u16> = subsets((1 << N) - 1, k)
+                    .filter(|&cover| {
+                        let fins = union & !cover;
+                        cover & !union == 0
+                            && fins != 0
+                            && (0..3).any(|chute| fins & !(0b111 << (3 * chute)) == 0)
+                    })
+                    .collect();
+                assert_eq!(
+                    fin_covers(union, k).collect::<Vec<_>>(),
+                    every,
+                    "{union:#b}, k={k}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn x_wing_clears_its_columns() {
