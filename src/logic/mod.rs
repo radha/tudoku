@@ -37,9 +37,11 @@ pub enum Technique {
     XYWing,
     Swordfish,
     XYZWing,
+    WWing,
     FinnedXWing,
     Jellyfish,
     FinnedSwordfish,
+    WXYZWing,
     FinnedJellyfish,
 }
 
@@ -64,9 +66,11 @@ impl Technique {
         Technique::XYWing,
         Technique::Swordfish,
         Technique::XYZWing,
+        Technique::WWing,
         Technique::FinnedXWing,
         Technique::Jellyfish,
         Technique::FinnedSwordfish,
+        Technique::WXYZWing,
         Technique::FinnedJellyfish,
     ];
 
@@ -91,9 +95,11 @@ impl Technique {
             Technique::XYWing => "XY-Wing",
             Technique::Swordfish => "Swordfish",
             Technique::XYZWing => "XYZ-Wing",
+            Technique::WWing => "W-Wing",
             Technique::FinnedXWing => "finned X-Wing",
             Technique::Jellyfish => "Jellyfish",
             Technique::FinnedSwordfish => "finned Swordfish",
+            Technique::WXYZWing => "WXYZ-Wing",
             Technique::FinnedJellyfish => "finned Jellyfish",
         }
     }
@@ -318,9 +324,11 @@ impl Grid {
             XYWing => self.xy_wing(),
             Swordfish => self.fish(3, t),
             XYZWing => self.xyz_wing(),
+            WWing => self.w_wing(),
             FinnedXWing => self.finned_fish(2, t),
             Jellyfish => self.fish(4, t),
             FinnedSwordfish => self.finned_fish(3, t),
+            WXYZWing => self.wxyz_wing(),
             FinnedJellyfish => self.finned_fish(4, t),
         }
     }
@@ -646,9 +654,11 @@ mod tests {
             Crane,
             EmptyRectangle,
             XYZWing,
+            WWing,
             FinnedXWing,
             Jellyfish,
             FinnedSwordfish,
+            WXYZWing,
             FinnedJellyfish,
         ] {
             assert!(found[t as usize] > 0, "{t:?} never fired: {found:?}");

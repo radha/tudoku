@@ -182,6 +182,16 @@ pub fn lesson(t: Technique) -> Lesson {
             ],
             roles: ("shared digit", "other digits"),
         },
+        WWing => Lesson {
+            steps: &[
+                "Find two cells that don't see each other, with only the same two digits: the ends.",
+                "Pick one digit, the bridge. Find a house where it fits in just two cells, one seeing each end.",
+                "If an end is the bridge, the house cell it sees isn't, so the other is, and the far end isn't.",
+                "So one end is the other digit: if neither is the bridge, both are.",
+                "Any cell that sees both ends can't be the other digit.",
+            ],
+            roles: ("removed digit", "bridge"),
+        },
         Jellyfish => Lesson {
             steps: &[
                 "Find four rows where a digit fits in only two to four cells each.",
@@ -208,6 +218,16 @@ pub fn lesson(t: Technique) -> Lesson {
                 "Either way, a fin-box cell in those columns (or rows) but not in the first rows (or columns) can't be it. (Sashimi: a first line has under two cells there.)",
             ],
             roles: ("fish cells", "fins"),
+        },
+        WXYZWing => Lesson {
+            steps: &[
+                "Take a pivot and three cells it sees, each fitting two or more digits.",
+                "Together they fit exactly four digits.",
+                "One digit is loose and fits in two or more of them. For every other digit, its cells among them all see each other.",
+                "So each other digit fills at most one: three can't fill four cells. One cell is the loose digit.",
+                "Any other cell that sees all the loose digit's cells can't be it.",
+            ],
+            roles: ("loose digit", "locked digits"),
         },
         FinnedJellyfish => Lesson {
             steps: &[
