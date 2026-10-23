@@ -43,7 +43,7 @@ impl UndoEntry {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SavedGame {
     version: u32,
-    difficulty: Difficulty,
+    difficulty: String,
     puzzle: String,
     solution: String,
     values: String,
@@ -57,7 +57,7 @@ pub struct SavedGame {
     undo: Vec<UndoEntry>,
 }
 
-const SAVE_VERSION: u32 = 1;
+const SAVE_VERSION: u32 = 2;
 
 pub struct Game {
     pub difficulty: Difficulty,
@@ -386,7 +386,7 @@ impl Game {
         let puzzle: Board = std::array::from_fn(|i| if self.given[i] { self.values[i] } else { 0 });
         SavedGame {
             version: SAVE_VERSION,
-            difficulty: self.difficulty,
+            difficulty: self.difficulty.name().to_string(),
             puzzle: format_board(&puzzle),
             solution: format_board(&self.solution),
             values: format_board(&self.values),
@@ -404,9 +404,13 @@ impl Game {
     /// Rebuild a game from a save, refusing anything that isn't a
     /// consistent, unfinished, uniquely solvable puzzle.
     pub fn restore(s: SavedGame) -> Result<Game, String> {
-        if s.version != SAVE_VERSION {
-            return Err(format!("unknown save version {}", s.version));
+        // Version 1 was written before the tutor, with the old level names.
+        let difficulty = match s.version {
+            1 => Difficulty::from_legacy_name(&s.difficulty),
+            SAVE_VERSION => Difficulty::from_name(&s.difficulty),
+            v => return Err(format!("unknown save version {v}")),
         }
+        .ok_or_else(|| format!("unknown level {}", s.difficulty))?;
         let board = |name: &str, text: &str| {
             parse_board(text).ok_or_else(|| format!("unreadable {name} board"))
         };
@@ -428,7 +432,7 @@ impl Game {
         if !consistent {
             return Err("inconsistent save".to_string());
         }
-        let mut game = Game::new(s.difficulty, puzzle, solution);
+        let mut game = Game::new(difficulty, puzzle, solution);
         game.values = values;
         game.notes.copy_from_slice(&s.notes);
         for i in s.hinted {
@@ -453,6 +457,33 @@ mod tests {
     fn test_game() -> Game {
         let (p, s) = test_board();
         Game::new(Difficulty::Easy, p, s)
+    }
+
+    #[test]
+    fn version_1_saves_resume_at_the_level_their_puzzle_belongs_to() {
+        let g = test_game();
+        for (old, new) in [
+            ("Zen", Difficulty::Master),
+            ("Expert", Difficulty::Hard),
+            ("Medium", Difficulty::Easy),
+        ] {
+            let mut v = serde_json::to_value(g.snapshot()).unwrap();
+            v["version"] = 1.into();
+            v["difficulty"] = old.into();
+            let back = Game::restore(serde_json::from_value(v).unwrap()).unwrap();
+            assert_eq!(back.difficulty, new, "{old}");
+        }
+    }
+
+    #[test]
+    fn version_2_saves_use_current_names_and_reject_unknown_ones() {
+        let mut v = serde_json::to_value(test_game().snapshot()).unwrap();
+        assert_eq!(v["version"], 2);
+        v["difficulty"] = "Master".into();
+        let back = Game::restore(serde_json::from_value(v.clone()).unwrap()).unwrap();
+        assert_eq!(back.difficulty, Difficulty::Master);
+        v["difficulty"] = "Expert".into();
+        assert!(Game::restore(serde_json::from_value(v).unwrap()).is_err());
     }
 
     fn solve_all(g: &mut Game) {

@@ -627,6 +627,10 @@ mod tests {
     fn number_keys_and_enter_start_levels() {
         let mut app = App::new(Store::none());
         key(&mut app, KeyCode::Char('4'));
+        assert_eq!(app.dealing, Some(Difficulty::Master));
+
+        let mut app = App::new(Store::none());
+        key(&mut app, KeyCode::Char('5'));
         assert_eq!(app.dealing, Some(Difficulty::Zen));
 
         let mut app = App::new(Store::none());

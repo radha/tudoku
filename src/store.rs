@@ -17,6 +17,9 @@ use crate::game::{Game, SavedGame};
 const GAME_FILE: &str = "game.json";
 const STATS_FILE: &str = "stats.json";
 
+/// Bumped when the level names change. Version 0 is the five-level build.
+const STATS_VERSION: u32 = 1;
+
 /// Per-level record. Best times only count games solved without hints.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LevelStats {
@@ -30,7 +33,7 @@ impl LevelStats {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Stats {
     levels: BTreeMap<Difficulty, LevelStats>,
 }
@@ -51,6 +54,49 @@ impl Stats {
             entry.best_ms = Some(ms);
         }
         is_best
+    }
+}
+
+/// Stats as written to disk, keyed by level name.
+#[derive(Serialize, Deserialize)]
+struct StatsFile {
+    #[serde(default)]
+    version: u32,
+    levels: BTreeMap<String, LevelStats>,
+}
+
+impl StatsFile {
+    fn from_stats(stats: &Stats) -> Self {
+        Self {
+            version: STATS_VERSION,
+            levels: stats
+                .levels
+                .iter()
+                .map(|(level, s)| (level.name().to_string(), *s))
+                .collect(),
+        }
+    }
+
+    /// Levels by their current names; version 0 files use the old names
+    /// and are converted. Names that mean nothing now are skipped.
+    fn into_stats(self) -> Stats {
+        let mut stats = Stats::default();
+        for (name, level_stats) in self.levels {
+            let level = match self.version {
+                0 if name == "Easy" => None, // the old Easy (45 clues) is gone
+                0 => Difficulty::from_legacy_name(&name),
+                _ => Difficulty::from_name(&name),
+            };
+            if let Some(level) = level {
+                let entry = stats.levels.entry(level).or_default();
+                entry.solved = entry.solved.saturating_add(level_stats.solved);
+                entry.best_ms = match (entry.best_ms, level_stats.best_ms) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (a, b) => a.or(b),
+                };
+            }
+        }
+        stats
     }
 }
 
@@ -121,14 +167,17 @@ impl Store {
         let Ok(text) = fs::read_to_string(&path) else {
             return Some(Stats::default());
         };
-        Some(serde_json::from_str(&text).unwrap_or_else(|_| {
-            let _ = fs::rename(&path, path.with_extension("json.damaged"));
-            Stats::default()
-        }))
+        Some(match serde_json::from_str::<StatsFile>(&text) {
+            Ok(file) => file.into_stats(),
+            Err(_) => {
+                let _ = fs::rename(&path, path.with_extension("json.damaged"));
+                Stats::default()
+            }
+        })
     }
 
     pub fn save_stats(&self, stats: &Stats) -> io::Result<()> {
-        self.write(STATS_FILE, stats)
+        self.write(STATS_FILE, &StatsFile::from_stats(stats))
     }
 }
 
@@ -202,6 +251,56 @@ mod tests {
         store.clear_game().unwrap();
         assert!(store.load_game().is_none());
         store.clear_game().expect("clearing twice is fine");
+    }
+
+    #[test]
+    fn legacy_stats_move_to_the_levels_their_puzzles_belong_to() {
+        // Written by the five-level build: Easy, Medium, Hard, Expert, Zen.
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join(STATS_FILE), r#"{"levels":{"Easy":{"solved":3,"best_ms":1000},"Hard":{"solved":1,"best_ms":594328},"Expert":{"solved":2,"best_ms":2000},"Zen":{"solved":32,"best_ms":330137}}}"#).unwrap();
+        let stats = Store::at(dir.path()).load_stats().unwrap();
+        assert_eq!(
+            stats.level(Difficulty::Easy),
+            LevelStats::default(),
+            "old Easy (45 clues) is dropped"
+        );
+        assert_eq!(
+            stats.level(Difficulty::Medium),
+            LevelStats {
+                solved: 1,
+                best_ms: Some(594328)
+            }
+        );
+        assert_eq!(stats.level(Difficulty::Hard).solved, 2);
+        assert_eq!(
+            stats.level(Difficulty::Master),
+            LevelStats {
+                solved: 32,
+                best_ms: Some(330137)
+            }
+        );
+        assert_eq!(stats.level(Difficulty::Zen), LevelStats::default());
+        assert!(!dir.path().join("stats.json.damaged").exists());
+    }
+
+    #[test]
+    fn converted_stats_are_never_converted_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path());
+        let mut stats = Stats::default();
+        stats.record(Difficulty::Hard, Duration::from_secs(90), 0);
+        store.save_stats(&stats).unwrap();
+        let text = fs::read_to_string(dir.path().join(STATS_FILE)).unwrap();
+        assert!(text.contains("\"version\":1"), "{text}");
+        assert_eq!(store.load_stats(), Some(stats), "Hard stays Hard");
+    }
+
+    #[test]
+    fn unknown_level_names_are_skipped_not_fatal() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join(STATS_FILE), r#"{"version":1,"levels":{"Nope":{"solved":1,"best_ms":null},"Zen":{"solved":4,"best_ms":9}}}"#).unwrap();
+        let stats = Store::at(dir.path()).load_stats().unwrap();
+        assert_eq!(stats.level(Difficulty::Zen).solved, 4);
     }
 
     #[test]

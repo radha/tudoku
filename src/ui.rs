@@ -537,7 +537,7 @@ fn draw_levels_menu(
     let (r, inner) = popup(frame, area, MENU_TEXT_W as u16 + 4, h, title);
     let mut lines: Vec<Line> = vec![
         Line::styled(
-            " arrows/hjkl + Enter, keys 1-4, or click",
+            " arrows/hjkl + Enter, keys 1-5, or click",
             Style::default().fg(MUTED),
         ),
         Line::from(""),

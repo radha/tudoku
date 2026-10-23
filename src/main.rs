@@ -243,7 +243,7 @@ fn offline_check() {
         assert!(sudoku::is_valid_solution(&d.solution), "{level:?}");
         assert!(sudoku::is_unique(&d.puzzle), "{level:?}");
         assert_eq!(sudoku::solve_one(&d.puzzle), Some(d.solution), "{level:?}");
-        assert!(level.techniques().contains(&d.grade.hardest), "{level:?}");
+        assert!(level.accepts(d.grade.hardest), "{level:?}");
         println!(
             "{:<6}  {} givens, hardest step: {:<17} ({} steps)  dealt in {:.0?}: OK",
             level.name(),

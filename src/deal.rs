@@ -5,30 +5,30 @@
 //! solution and can be finished by logic alone — no guessing, ever.
 
 use std::num::NonZero;
-use std::ops::RangeInclusive;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use rand::Rng;
-use serde::{Deserialize, Serialize};
 
 use crate::logic::{self, Grade, Technique};
 use crate::sudoku::{self, Board, CELLS};
 
-/// Four difficulty levels, ordered easy -> zen.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+/// Five difficulty levels, ordered easy -> zen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Difficulty {
     Easy,
     Medium,
     Hard,
+    Master,
     Zen,
 }
 
 impl Difficulty {
-    pub const ALL: [Difficulty; 4] = [
+    pub const ALL: [Difficulty; 5] = [
         Difficulty::Easy,
         Difficulty::Medium,
         Difficulty::Hard,
+        Difficulty::Master,
         Difficulty::Zen,
     ];
 
@@ -37,6 +37,7 @@ impl Difficulty {
             Difficulty::Easy => "Easy",
             Difficulty::Medium => "Medium",
             Difficulty::Hard => "Hard",
+            Difficulty::Master => "Master",
             Difficulty::Zen => "Zen",
         }
     }
@@ -45,8 +46,9 @@ impl Difficulty {
         match self {
             Difficulty::Easy => "Warm-up: just singles",
             Difficulty::Medium => "Needs notes: pointing & pairs",
-            Difficulty::Hard => "Fish & wings: X-Wing, XY-Wing",
-            Difficulty::Zen => "Barely there: Swordfish & XYZ",
+            Difficulty::Hard => "Patterns: X-Wing, Skyscraper, XY-Wing",
+            Difficulty::Master => "Fish, wings & rectangles",
+            Difficulty::Zen => "Chains & sets",
         }
     }
 
@@ -54,14 +56,29 @@ impl Difficulty {
         self as usize
     }
 
-    /// The techniques this level's hardest step must come from.
-    pub fn techniques(self) -> RangeInclusive<Technique> {
-        use Technique::*;
-        match self {
-            Difficulty::Easy => NakedSingle..=HiddenSingle,
-            Difficulty::Medium => LockedCandidates..=HiddenTriple,
-            Difficulty::Hard => XWing..=HiddenQuad,
-            Difficulty::Zen => Swordfish..=Jellyfish,
+    /// Whether a puzzle whose hardest step is `hardest` belongs at this
+    /// level. Zen has no strategies of its own until it gets some, so for
+    /// now it deals Master puzzles.
+    pub fn accepts(self, hardest: Technique) -> bool {
+        level_of(hardest) == self
+            || (self == Difficulty::Zen && level_of(hardest) == Difficulty::Master)
+    }
+
+    /// The level with this name (as shown and as saved).
+    pub fn from_name(name: &str) -> Option<Difficulty> {
+        Difficulty::ALL.into_iter().find(|d| d.name() == name)
+    }
+
+    /// The level a name from before the tutor (Easy, Medium, Hard, Expert,
+    /// Zen) stands for now, keeping the same puzzles.
+    pub fn from_legacy_name(name: &str) -> Option<Difficulty> {
+        match name {
+            "Easy" => Some(Difficulty::Easy),
+            "Medium" => Some(Difficulty::Easy),
+            "Hard" => Some(Difficulty::Medium),
+            "Expert" => Some(Difficulty::Hard),
+            "Zen" => Some(Difficulty::Master),
+            _ => None,
         }
     }
 
@@ -72,6 +89,19 @@ impl Difficulty {
             Difficulty::Easy => 50,
             _ => CELLS,
         }
+    }
+}
+
+/// The level whose puzzles have `t` as their hardest step.
+pub fn level_of(t: Technique) -> Difficulty {
+    use Technique::*;
+    match t {
+        NakedSingle | HiddenSingle => Difficulty::Easy,
+        LockedCandidates | NakedPair | HiddenPair | NakedTriple | HiddenTriple => {
+            Difficulty::Medium
+        }
+        XWing | XYWing | NakedQuad | HiddenQuad => Difficulty::Hard,
+        Swordfish | XYZWing | Jellyfish => Difficulty::Master,
     }
 }
 
@@ -94,7 +124,7 @@ fn try_deal<R: Rng>(level: Difficulty, rng: &mut R) -> Option<Deal> {
     let solution = sudoku::full_solution(rng);
     let puzzle = sudoku::dig(&solution, level.holes(), rng);
     let grade = logic::grade(&puzzle)?;
-    level.techniques().contains(&grade.hardest).then_some(Deal {
+    level.accepts(grade.hardest).then_some(Deal {
         puzzle,
         solution,
         grade,
@@ -151,13 +181,41 @@ mod tests {
     }
 
     #[test]
-    fn levels_cover_every_technique_once_and_in_order() {
-        let bands: Vec<_> = Difficulty::ALL.iter().map(|d| d.techniques()).collect();
-        for pair in bands.windows(2) {
-            assert!(pair[0].end() < pair[1].start(), "{pair:?}");
+    fn five_levels_in_order() {
+        assert_eq!(
+            Difficulty::ALL.map(Difficulty::name),
+            ["Easy", "Medium", "Hard", "Master", "Zen"]
+        );
+    }
+
+    #[test]
+    fn technique_levels_never_go_down() {
+        let levels: Vec<_> = Technique::ALL.iter().map(|&t| level_of(t)).collect();
+        assert!(levels.windows(2).all(|w| w[0] <= w[1]), "{levels:?}");
+        assert_eq!(level_of(Technique::XWing), Difficulty::Hard);
+        assert_eq!(level_of(Technique::Swordfish), Difficulty::Master);
+    }
+
+    #[test]
+    fn zen_deals_master_puzzles_until_it_has_strategies() {
+        assert!(Difficulty::Zen.accepts(Technique::Jellyfish));
+        assert!(Difficulty::Master.accepts(Technique::Jellyfish));
+        assert!(!Difficulty::Master.accepts(Technique::XWing));
+    }
+
+    #[test]
+    fn legacy_names_map_to_the_same_puzzles() {
+        use Difficulty::*;
+        for (old, new) in [
+            ("Easy", Easy),
+            ("Medium", Easy),
+            ("Hard", Medium),
+            ("Expert", Hard),
+            ("Zen", Master),
+        ] {
+            assert_eq!(Difficulty::from_legacy_name(old), Some(new), "{old}");
         }
-        assert_eq!(*bands[0].start(), Technique::NakedSingle);
-        assert_eq!(*bands.last().unwrap().end(), Technique::Jellyfish);
+        assert_eq!(Difficulty::from_legacy_name("Nope"), None);
     }
 
     #[test]
@@ -168,7 +226,7 @@ mod tests {
             assert!(sudoku::is_valid_solution(&d.solution), "{level:?}");
             assert!(sudoku::is_unique(&d.puzzle), "{level:?}");
             assert_eq!(sudoku::solve_one(&d.puzzle), Some(d.solution));
-            assert!(level.techniques().contains(&d.grade.hardest), "{level:?}");
+            assert!(level.accepts(d.grade.hardest), "{level:?}");
             assert_eq!(logic::grade(&d.puzzle), Some(d.grade));
         }
     }
@@ -184,7 +242,7 @@ mod tests {
     #[test]
     fn fast_dealing_matches_the_level() {
         let d = deal_fast(Difficulty::Medium);
-        assert!(Difficulty::Medium.techniques().contains(&d.grade.hardest));
+        assert!(Difficulty::Medium.accepts(d.grade.hardest));
         assert!(sudoku::is_unique(&d.puzzle));
     }
 }

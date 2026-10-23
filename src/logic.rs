@@ -28,6 +28,24 @@ pub enum Technique {
 }
 
 impl Technique {
+    #[allow(dead_code)] // the tutor uses this in a later step
+    pub const ALL: &'static [Technique] = &[
+        Technique::NakedSingle,
+        Technique::HiddenSingle,
+        Technique::LockedCandidates,
+        Technique::NakedPair,
+        Technique::HiddenPair,
+        Technique::NakedTriple,
+        Technique::HiddenTriple,
+        Technique::XWing,
+        Technique::XYWing,
+        Technique::NakedQuad,
+        Technique::HiddenQuad,
+        Technique::Swordfish,
+        Technique::XYZWing,
+        Technique::Jellyfish,
+    ];
+
     pub fn name(self) -> &'static str {
         match self {
             Technique::NakedSingle => "naked single",
