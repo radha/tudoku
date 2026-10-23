@@ -1,4 +1,4 @@
-//! Rendering: board, number pad, buttons, popups. Pure view code —
+//! Rendering: board, number pad, buttons, tutor pane, popups. Pure view code —
 //! `render` draws the app and returns the clickable areas for the event
 //! loop to hit-test mouse clicks against.
 
@@ -16,6 +16,8 @@ use crate::app::{Action, App, BoardAction, MenuRow, Overlay};
 use crate::deal::Difficulty;
 use crate::game::Game;
 use crate::sudoku::{box_of, idx};
+
+mod tutor;
 
 // ---------------------------------------------------------------- palette
 
@@ -274,8 +276,6 @@ fn draw_board(
                     RED
                 } else if game.given[i] {
                     INK
-                } else if game.hinted[i] {
-                    GREEN
                 } else {
                     PEN
                 };
@@ -384,7 +384,7 @@ fn draw_button(frame: &mut Frame, rect: Rect, btn: &Button, hits: &mut Vec<Hit>)
     frame.render_widget(Paragraph::new(line).alignment(Alignment::Center), inner);
 }
 
-/// "best 08:12", or a dash before the first hint-free solve.
+/// "best 08:12", or a dash before the first tutor-free solve.
 fn best_label(best: Option<Duration>) -> String {
     best.map_or_else(
         || "best —".to_string(),
@@ -434,7 +434,7 @@ fn header_lines(game: &Game, best: Option<Duration>, width: u16) -> (Line<'stati
                 Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!("✖ {}   💡 {}   ", game.mistakes, game.hints_used),
+                format!("✖ {}   🎓 {}   ", game.mistakes, game.tutor_used),
                 Style::default().fg(MUTED),
             ),
             Span::styled("N new puzzle · d change level", Style::default().fg(INK)),
@@ -453,7 +453,7 @@ fn header_lines(game: &Game, best: Option<Duration>, width: u16) -> (Line<'stati
     (top, bottom)
 }
 
-/// Clock, mistakes, hints, progress and notes mode for a game in play.
+/// Clock, mistakes, tutor use, progress and notes mode for a game in play.
 fn stats_line(
     game: &Game,
     done: usize,
@@ -481,7 +481,7 @@ fn stats_line(
             Style::default().fg(if game.mistakes > 0 { RED } else { MUTED }),
         ),
         Span::styled(
-            format!("💡 {}   ", game.hints_used),
+            format!("🎓 {}   ", game.tutor_used),
             Style::default().fg(MUTED),
         ),
         Span::styled("█".repeat(filled), Style::default().fg(ACCENT)),
@@ -590,7 +590,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         ("Notes", "n toggles pencil marks, then 1-9"),
         ("Erase", "0 / x / e / Backspace / Delete"),
         ("Undo", "u  or Ctrl+Z"),
-        ("Hint", "H (capital) — fills the next logical cell"),
+        ("Tutor", "t — names a strategy; t again shows it"),
         ("New", "N (capital) — fresh puzzle, same level"),
         ("Level", "d — change difficulty"),
         ("Pause", "p, or switch windows — stops the clock"),
@@ -648,9 +648,9 @@ fn draw_won(frame: &mut Frame, area: Rect, game: &Game, app: &App) -> (Rect, Rec
             "★ New best time! ★",
             Style::default().fg(PEN).add_modifier(Modifier::BOLD),
         )
-    } else if game.hints_used > 0 {
+    } else if game.tutor_used > 0 {
         Line::styled(
-            "best times count hint-free solves only",
+            "best times count tutor-free solves only",
             Style::default().fg(MUTED),
         )
     } else {
@@ -664,10 +664,10 @@ fn draw_won(frame: &mut Frame, area: Rect, game: &Game, app: &App) -> (Rect, Rec
         Line::from(""),
         Line::styled(
             format!(
-                "Time {}   Mistakes {}   Hints {}",
+                "Time {}   Mistakes {}   Tutor {}",
                 format_time(game.elapsed()),
                 game.mistakes,
-                game.hints_used
+                game.tutor_used
             ),
             Style::default().fg(INK),
         ),
@@ -801,8 +801,8 @@ fn draw_title(frame: &mut Frame, area: Rect, app: &App, hits: &mut Vec<Hit>) {
     }
 }
 
-fn draw_panel(frame: &mut Frame, game: &Game, x: u16, y: u16, hits: &mut Vec<Hit>) {
-    // Number pad: 3x3 grid of digit buttons.
+/// The number pad: a 3x3 grid of digit buttons.
+fn draw_numpad(frame: &mut Frame, game: &Game, x: u16, y: u16, hits: &mut Vec<Hit>) {
     let remaining = game.remaining();
     let sel_val = if game.paused { 0 } else { game.highlight() };
     for d in 1..=9u8 {
@@ -849,9 +849,10 @@ fn draw_panel(frame: &mut Frame, game: &Game, x: u16, y: u16, hits: &mut Vec<Hit
         };
         frame.render_widget(Paragraph::new(label).alignment(Alignment::Center), inner);
     }
+}
 
-    // Action buttons: two columns of four, below the number pad.
-    let btn_y0 = y + DIGIT_GRID_H + PANEL_GROUP_GAP;
+/// The action buttons: two columns of four.
+fn draw_buttons(frame: &mut Frame, game: &Game, x: u16, y: u16, hits: &mut Vec<Hit>) {
     let specs = [
         Button {
             title: "Notes",
@@ -866,10 +867,10 @@ fn draw_panel(frame: &mut Frame, game: &Game, x: u16, y: u16, hits: &mut Vec<Hit
             action: Action::Board(BoardAction::Undo),
         },
         Button {
-            title: "Hint",
-            hint: "H",
+            title: "Tutor",
+            hint: "t",
             active: false,
-            action: Action::Board(BoardAction::Hint),
+            action: Action::Tutor,
         },
         Button {
             title: "Erase",
@@ -905,12 +906,7 @@ fn draw_panel(frame: &mut Frame, game: &Game, x: u16, y: u16, hits: &mut Vec<Hit
     for (k, btn) in specs.iter().enumerate() {
         let col = k as u16 % 2;
         let row = k as u16 / 2;
-        let r = Rect::new(
-            x + col * (BTN_W + BTN_GAP),
-            btn_y0 + row * CELL_H,
-            BTN_W,
-            CELL_H,
-        );
+        let r = Rect::new(x + col * (BTN_W + BTN_GAP), y + row * CELL_H, BTN_W, CELL_H);
         draw_button(frame, r, btn, hits);
     }
 }
@@ -937,8 +933,19 @@ fn draw_game(frame: &mut Frame, area: Rect, app: &App, game: &Game, hits: &mut V
     let labels_y = if header_h(area) > 2 { oy - 1 } else { oy };
     draw_board(frame, game, ox, oy, labels_y, hits);
     let panel_x = ox + BOARD_W + PANEL_GAP;
-    let panel_y = oy + (BOARD_H - PANEL_H) / 2;
-    draw_panel(frame, game, panel_x, panel_y, hits);
+    if let Some(t) = &app.tutor {
+        // The tutor takes the buttons' place, and the number pad moves up
+        // to the board's top to give it the rest of the board's height.
+        draw_numpad(frame, game, panel_x, oy, hits);
+        let pane_y = oy + DIGIT_GRID_H + PANEL_GROUP_GAP;
+        let pane = Rect::new(panel_x, pane_y, PANEL_W, oy + BOARD_H - pane_y);
+        tutor::draw_pane(frame, pane, t, hits);
+    } else {
+        let panel_y = oy + (BOARD_H - PANEL_H) / 2;
+        draw_numpad(frame, game, panel_x, panel_y, hits);
+        let buttons_y = panel_y + DIGIT_GRID_H + PANEL_GROUP_GAP;
+        draw_buttons(frame, game, panel_x, buttons_y, hits);
+    }
 
     // Footer hints, directly under the board.
     let footer_y = oy + BOARD_H;
@@ -948,7 +955,7 @@ fn draw_game(frame: &mut Frame, area: Rect, app: &App, game: &Game, hits: &mut V
             ("1-9", "fill"),
             ("n", "notes"),
             ("u", "undo"),
-            ("H", "hint"),
+            ("t", "tutor"),
             ("e", "erase"),
             ("d", "level"),
             ("?", "help"),
@@ -1005,8 +1012,11 @@ pub fn render(frame: &mut Frame, app: &App) -> Vec<Hit> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::{Tutor, TutorStage};
+    use crate::logic::{Effect, Pattern, Step, Technique, rc};
     use crate::store::Store;
-    use crate::sudoku::test_board;
+    use crate::sudoku::{CELLS, candidates_mask, test_board};
+    use crate::tutor::{Advice, NoteMode};
     use ratatui::{Terminal, backend::TestBackend};
 
     fn app_with_game() -> App {
@@ -1111,7 +1121,7 @@ mod tests {
             "board should fit at {MIN_W}x{MIN_H}"
         );
         assert_eq!(cell_hits(&hits), 81);
-        for label in ["Notes", "Undo", "Hint", "Erase"] {
+        for label in ["Notes", "Undo", "Tutor", "Erase"] {
             assert!(
                 screen.contains(label),
                 "{label} button missing at minimum size"
@@ -1139,7 +1149,7 @@ mod tests {
         let screen = text(&lines);
         assert!(screen.contains("TUDOKU"), "title missing");
         assert!(screen.contains("Easy"), "difficulty missing");
-        for label in ["Notes", "Undo", "Hint", "Erase", "Level", "Pause", "Help"] {
+        for label in ["Notes", "Undo", "Tutor", "Erase", "Level", "Pause", "Help"] {
             assert!(screen.contains(label), "{label} button missing");
         }
         // Board cells and number pad are clickable.
@@ -1276,7 +1286,7 @@ mod tests {
         let (lines, _) = draw(&app, W, 50);
         let screen = text(&lines);
         assert!(screen.contains("How to play"));
-        assert!(screen.contains("Hint"));
+        assert!(screen.contains("Tutor"));
     }
 
     #[test]
@@ -1417,6 +1427,9 @@ mod tests {
             screens.push(a);
         }
         screens.push(app);
+        let mut tutored = app_with_game();
+        tutored.apply(Action::Tutor);
+        screens.push(tutored);
         for (k, app) in screens.iter().enumerate() {
             for (w, h) in [(W, 50), (40, 20)] {
                 let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
@@ -1441,5 +1454,143 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The tutor pane's inside rows, as drawn `W` columns wide.
+    fn pane_rows(lines: &[String]) -> Vec<String> {
+        let (ox, oy) = board_origin(Rect::new(0, 0, W, 50));
+        let x = usize::from(ox + BOARD_W + PANEL_GAP);
+        let top = usize::from(oy + DIGIT_GRID_H + PANEL_GROUP_GAP);
+        let h = usize::from(BOARD_H - DIGIT_GRID_H - PANEL_GROUP_GAP);
+        lines[top + 1..top + h - 1]
+            .iter()
+            .map(|l| {
+                l.chars()
+                    .skip(x + 1)
+                    .take(usize::from(PANEL_W - 2))
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// The pane's words, with its wrapped lines joined back up.
+    fn pane_text(lines: &[String]) -> String {
+        pane_rows(lines)
+            .iter()
+            .map(|r| r.trim())
+            .filter(|r| !r.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn names_a_cell(text: &str) -> bool {
+        text.as_bytes()
+            .windows(4)
+            .any(|w| w[0] == b'r' && w[1].is_ascii_digit() && w[2] == b'c' && w[3].is_ascii_digit())
+    }
+
+    #[test]
+    fn nudge_pane_names_only_the_strategy() {
+        let mut app = app_with_game();
+        app.apply(Action::Tutor);
+        let (lines, hits) = draw(&app, W, 50);
+        let pane = pane_text(&lines);
+        assert!(pane.contains("Look for"), "{pane}");
+        assert!(
+            pane.contains("HIDDEN SINGLE") || pane.contains("NAKED SINGLE"),
+            "{pane}"
+        );
+        assert!(!names_a_cell(&pane), "{pane}");
+        // The number pad moves up to the board's top to make room.
+        let (_, oy) = board_origin(Rect::new(0, 0, W, 50));
+        let pad = hits
+            .iter()
+            .find(|h| h.action == Some(Action::Board(BoardAction::Digit(1))))
+            .unwrap();
+        assert_eq!(pad.rect.y, oy);
+        // Its keys are clickable too.
+        for want in [Action::Tutor, Action::CloseTutor] {
+            assert!(hits.iter().any(|h| h.action == Some(want)), "{want:?}");
+        }
+    }
+
+    #[test]
+    fn pair_mark_mode_says_so() {
+        let mut app = app_with_game();
+        app.apply(Action::Tutor);
+        let pane = pane_text(&draw(&app, W, 50).0);
+        assert!(
+            pane.contains("Going by placed digits — your notes aren't filled in yet."),
+            "{pane}"
+        );
+
+        let mut app = app_with_game();
+        let game = app.game.as_mut().unwrap();
+        for i in 0..CELLS {
+            if game.values[i] == 0 {
+                game.notes[i] = candidates_mask(&game.values, i);
+            }
+        }
+        app.apply(Action::Tutor);
+        let pane = pane_text(&draw(&app, W, 50).0);
+        assert!(!pane.contains("Going by placed"), "full notes: {pane}");
+    }
+
+    #[test]
+    fn wrong_digit_advice_names_the_cell() {
+        let mut app = app_with_game();
+        app.apply(Action::Board(BoardAction::Digit(9))); // (0,2) wants a 4
+        app.apply(Action::Tutor);
+        let pane = pane_text(&draw(&app, W, 50).0);
+        assert!(pane.contains("r1c3 is wrong: clear it first."), "{pane}");
+    }
+
+    #[test]
+    fn show_me_names_the_cell_and_the_digit() {
+        let mut app = app_with_game();
+        app.apply(Action::Tutor);
+        app.apply(Action::Tutor);
+        let tutor = app.tutor.clone().unwrap();
+        let Advice::Step(step) = &tutor.advice else {
+            panic!("expected a step")
+        };
+        let Effect::Place { cell, digit } = step.effect else {
+            panic!("expected a placement")
+        };
+        let (lines, hits) = draw(&app, W, 50);
+        let pane = pane_text(&lines);
+        let want = format!("{} is {digit}", rc(cell));
+        assert!(pane.contains(&want), "{pane}");
+        assert!(pane.contains("do it for me"), "{pane}");
+        assert!(hits.iter().any(|h| h.action == Some(Action::TutorApply)));
+        assert!(
+            text(&lines).contains(&format!(" {} ", step.technique.name())),
+            "the pane is titled with the strategy"
+        );
+    }
+
+    #[test]
+    fn show_me_lists_what_goes() {
+        let shown = |digit: Option<u8>, removals: Vec<(usize, u16)>| {
+            let mut app = app_with_game();
+            app.tutor = Some(Tutor {
+                mode: NoteMode::Full,
+                advice: Advice::Step(Step {
+                    technique: Technique::Pointing,
+                    effect: Effect::Eliminate(removals),
+                    pattern: Pattern {
+                        digit,
+                        ..Default::default()
+                    },
+                    why: "Because.".to_string(),
+                }),
+                stage: TutorStage::ShowMe,
+            });
+            pane_text(&draw(&app, W, 50).0)
+        };
+        let pane = shown(Some(4), vec![(2, 1 << 4), (3, 1 << 4)]);
+        assert!(pane.contains("Because. Not 4: r1c3, r1c4"), "{pane}");
+        let pane = shown(None, vec![(2, 0b110), (3, 1 << 9)]);
+        assert!(pane.contains("r1c3: not 1 and 2 r1c4: not 9"), "{pane}");
     }
 }

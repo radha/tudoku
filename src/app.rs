@@ -8,6 +8,9 @@
 //!
 //! Keys and clicks both become an [`Action`], and [`App::apply`] is the one
 //! place that decides what an action does.
+//!
+//! The tutor is not a popup: its pane sits beside a board that stays in
+//! play, so the board keys keep working while it is open.
 
 use std::io;
 use std::time::{Duration, Instant};
@@ -16,7 +19,10 @@ use crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::deal::Difficulty;
 use crate::game::Game;
+use crate::logic::Effect;
 use crate::store::{Stats, Store};
+use crate::sudoku::{CELLS, col_of, row_of};
+use crate::tutor::{self, Advice, NoteMode};
 
 /// How often a running game is saved even without edits.
 const AUTOSAVE_EVERY: Duration = Duration::from_secs(5);
@@ -43,7 +49,6 @@ pub enum BoardAction {
     Erase,
     ToggleNotes,
     Undo,
-    Hint,
 }
 
 /// Everything the player can ask for, by key or by click.
@@ -65,6 +70,45 @@ pub enum Action {
     Pause,
     /// Dismiss the top overlay: Esc, or a click outside it.
     Close,
+    /// Open the tutor, or take it one stage deeper.
+    Tutor,
+    /// Let the tutor do what it advises.
+    TutorApply,
+    CloseTutor,
+}
+
+/// How far the tutor has gone with its advice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TutorStage {
+    /// Only the strategy's name, so you can hunt for it yourself.
+    Nudge,
+    /// The step itself, on your own board.
+    ShowMe,
+}
+
+/// The tutor's pane: what it made of the board when it was opened, and
+/// how far it has gone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tutor {
+    pub mode: NoteMode,
+    pub advice: Advice,
+    pub stage: TutorStage,
+}
+
+impl Tutor {
+    /// Whether `a` can do it for you: place a single or clear the
+    /// eliminated notes once the step is shown, or place one digit when
+    /// no strategy applies. Eliminations need full notes to clear.
+    pub fn can_apply(&self) -> bool {
+        match (&self.advice, self.stage) {
+            (Advice::Stuck, _) => true,
+            (Advice::Step(step), TutorStage::ShowMe) => match step.effect {
+                Effect::Place { .. } => true,
+                Effect::Eliminate(_) => self.mode == NoteMode::Full,
+            },
+            _ => false,
+        }
+    }
 }
 
 /// A row of the title-screen menu.
@@ -87,6 +131,8 @@ pub struct App {
     pub stats: Stats,
     /// The last solve set a new best time.
     pub new_best: bool,
+    /// The tutor's pane, while it is open.
+    pub tutor: Option<Tutor>,
     store: Store,
     last_saved: Instant,
     /// Whether the terminal window has focus, as far as we know.
@@ -116,6 +162,7 @@ impl App {
             resume,
             stats: store.load_stats().unwrap_or_default(),
             new_best: false,
+            tutor: None,
             store,
             last_saved: Instant::now(),
             focused: true,
@@ -194,8 +241,8 @@ impl App {
 
     /// Keys for the base screen, when no overlay is open.
     fn base_key(&self, code: KeyCode) -> Option<Action> {
-        use BoardAction::{Digit, Erase, Hint, Move, ToggleNotes, Undo};
-        use KeyCode::{Backspace, Char, Delete, Down, Enter, F, Left, Right, Up};
+        use BoardAction::{Digit, Erase, Move, ToggleNotes, Undo};
+        use KeyCode::{Backspace, Char, Delete, Down, Enter, Esc, F, Left, Right, Up};
 
         let Some(game) = &self.game else {
             // Title menu.
@@ -224,7 +271,9 @@ impl App {
             Char('0' | 'x' | 'X' | 'e' | 'E') | Backspace | Delete => Action::Board(Erase),
             Char('n') => Action::Board(ToggleNotes),
             Char('u' | 'U') => Action::Board(Undo),
-            Char('H') => Action::Board(Hint),
+            Char('t') => Action::Tutor,
+            Char('a') if self.tutor.as_ref().is_some_and(Tutor::can_apply) => Action::TutorApply,
+            Esc if self.tutor.is_some() => Action::CloseTutor,
             Char('p' | 'P') => Action::Pause,
             _ => return None,
         };
@@ -250,6 +299,9 @@ impl App {
             Action::OpenHelp => self.overlays.push(Overlay::Help),
             Action::Pause => self.pause(),
             Action::Close => self.close_top(),
+            Action::Tutor => self.ask_tutor(),
+            Action::TutorApply => self.apply_tutor(),
+            Action::CloseTutor => self.tutor = None,
         }
         false
     }
@@ -334,6 +386,7 @@ impl App {
 
     /// Record a solve and forget the save.
     fn finish(&mut self) {
+        self.tutor = None;
         let Some(game) = &self.game else { return };
         // Another running tudoku may have recorded solves since we loaded:
         // build on what's on disk now, not on our startup copy.
@@ -342,7 +395,7 @@ impl App {
         }
         self.new_best = self
             .stats
-            .record(game.difficulty, game.elapsed(), game.hints_used);
+            .record(game.difficulty, game.elapsed(), game.tutor_used);
         // Clear the save even if the stats can't be written: a solved
         // puzzle must never come back as "Continue".
         let stats_saved = self.store.save_stats(&self.stats);
@@ -392,16 +445,100 @@ impl App {
             BoardAction::Erase => g.erase(),
             BoardAction::ToggleNotes => g.toggle_notes_mode(),
             BoardAction::Undo => g.undo(),
-            BoardAction::Hint => g.hint(),
         }
-        if g.completed && !was_done {
+        let solved = g.completed && !was_done;
+        let edit = !matches!(action, BoardAction::Move(..) | BoardAction::Select(..));
+        if edit {
+            self.drop_stale_tutor();
+        }
+        if solved {
             self.finish();
-        } else if !matches!(action, BoardAction::Move(..) | BoardAction::Select(..)) {
+        } else if edit {
             self.save();
         }
     }
 
+    /// `t`: open the tutor on a nudge, or take it one stage deeper. Each
+    /// fresh opening counts against the puzzle's best time.
+    fn ask_tutor(&mut self) {
+        if !self.overlays.is_empty() {
+            return;
+        }
+        let Some(g) = &mut self.game else { return };
+        if g.completed || g.paused {
+            return;
+        }
+        if let Some(t) = &mut self.tutor {
+            if let Advice::Step(_) = t.advice {
+                t.stage = TutorStage::ShowMe;
+            }
+            return;
+        }
+        let (mode, advice) = tutor::consult(g);
+        // The tutor points at the cell it is talking about.
+        if let Advice::WrongDigit(i) | Advice::WrongNotes(i) = advice {
+            g.set_selected(row_of(i), col_of(i));
+        }
+        g.use_tutor();
+        self.tutor = Some(Tutor {
+            mode,
+            advice,
+            stage: TutorStage::Nudge,
+        });
+        self.save();
+    }
+
+    /// `a`: do what the tutor advises, then put the tutor away.
+    fn apply_tutor(&mut self) {
+        if !self.overlays.is_empty() {
+            return;
+        }
+        let (Some(g), Some(t)) = (&mut self.game, &self.tutor) else {
+            return;
+        };
+        if !t.can_apply() || g.completed || g.paused {
+            return;
+        }
+        match &t.advice {
+            Advice::Step(step) => {
+                g.apply_step(step, t.mode);
+            }
+            Advice::Stuck => {
+                let s = g.selected_idx();
+                let open = if g.values[s] == 0 {
+                    Some(s)
+                } else {
+                    (0..CELLS).find(|&i| g.values[i] == 0)
+                };
+                if let Some(cell) = open {
+                    g.place_answer(cell);
+                }
+            }
+            Advice::WrongDigit(_) | Advice::WrongNotes(_) => {}
+        }
+        let done = g.completed;
+        self.tutor = None;
+        if done {
+            self.finish();
+        } else {
+            self.save();
+        }
+    }
+
+    /// After an edit, close the tutor if the board no longer reads the way
+    /// it did when the tutor was opened.
+    fn drop_stale_tutor(&mut self) {
+        let (Some(g), Some(t)) = (&self.game, &self.tutor) else {
+            return;
+        };
+        let (mode, advice) = tutor::consult(g);
+        if mode != t.mode || advice != t.advice {
+            self.tutor = None;
+        }
+    }
+
     fn request_new_game(&mut self, level: Difficulty) {
+        self.tutor = None;
         self.last_level = level;
         self.dealing = Some(level);
         self.overlays.clear();
@@ -410,6 +547,7 @@ impl App {
     /// Swap in a new or resumed game (replacing any older save).
     pub fn start_game(&mut self, game: Game) {
         self.game = Some(game);
+        self.tutor = None;
         self.resume = None;
         self.dealing = None;
         self.new_best = false;
@@ -425,8 +563,9 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::logic::{Grid, Step};
     use crate::store::Store;
-    use crate::sudoku::{CELLS, col_of, row_of, test_board};
+    use crate::sudoku::{idx, parse_board, solve_one, test_board};
     use crate::ui::{self, hit_at};
     use ratatui::{Terminal, backend::TestBackend};
 
@@ -835,15 +974,250 @@ mod tests {
     }
 
     #[test]
-    fn a_hinted_solve_counts_but_sets_no_best_time() {
+    fn tutor_use_costs_the_best_time() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = app_on_disk(&dir);
         let (p, s) = test_board();
         app.start_game(Game::new(Difficulty::Easy, p, s));
-        key(&mut app, KeyCode::Char('H'));
+        key(&mut app, KeyCode::Char('t')); // even a nudge counts
+        key(&mut app, KeyCode::Esc);
         solve(&mut app);
         assert!(!app.new_best);
         let easy = app.stats.level(Difficulty::Easy);
         assert_eq!((easy.solved, easy.best()), (1, None));
+    }
+
+    fn tutor_of(app: &App) -> &Tutor {
+        app.tutor.as_ref().expect("the tutor is open")
+    }
+
+    fn stage(app: &App) -> Option<TutorStage> {
+        app.tutor.as_ref().map(|t| t.stage)
+    }
+
+    /// Press `t` until the tutor shows its step on the board.
+    fn show_me(app: &mut App) {
+        for _ in 0..4 {
+            if stage(app) == Some(TutorStage::ShowMe) {
+                return;
+            }
+            key(app, KeyCode::Char('t'));
+        }
+        panic!("the tutor never got to show me");
+    }
+
+    /// The digit the tutor is about to place, and where.
+    fn placement(app: &App) -> (usize, u8) {
+        match &tutor_of(app).advice {
+            Advice::Step(Step {
+                effect: Effect::Place { cell, digit },
+                ..
+            }) => (*cell, *digit),
+            other => panic!("expected a placement, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn t_opens_a_nudge_and_counts_once_per_opening() {
+        let mut app = app_with_game(Difficulty::Easy);
+        let used = |app: &App| app.game.as_ref().unwrap().tutor_used;
+        key(&mut app, KeyCode::Char('t'));
+        assert_eq!(stage(&app), Some(TutorStage::Nudge));
+        assert_eq!(used(&app), 1);
+        key(&mut app, KeyCode::Char('t'));
+        assert_eq!(stage(&app), Some(TutorStage::ShowMe));
+        assert_eq!(used(&app), 1, "going deeper is the same ask");
+        key(&mut app, KeyCode::Esc);
+        assert_eq!(app.tutor, None);
+        key(&mut app, KeyCode::Char('t'));
+        assert_eq!(stage(&app), Some(TutorStage::Nudge), "a fresh start");
+        assert_eq!(used(&app), 2);
+    }
+
+    #[test]
+    fn board_keys_still_work_during_the_nudge() {
+        let mut app = app_with_game(Difficulty::Easy);
+        key(&mut app, KeyCode::Char('t'));
+        let nudge = app.tutor.clone();
+        key(&mut app, KeyCode::Down); // (1,2) is empty
+        key(&mut app, KeyCode::Char('n'));
+        key(&mut app, KeyCode::Char('7'));
+        let g = app.game.as_ref().unwrap();
+        assert_eq!(g.selected, (1, 2));
+        assert_eq!(g.notes[idx(1, 2)], 1 << 7, "a pencil mark went in");
+        assert_eq!(app.tutor, nudge, "and the nudge still stands");
+    }
+
+    #[test]
+    fn a_applies_the_step_in_show_me() {
+        let mut app = app_with_game(Difficulty::Easy);
+        show_me(&mut app);
+        let (cell, digit) = placement(&app);
+        key(&mut app, KeyCode::Char('a'));
+        assert_eq!(app.game.as_ref().unwrap().values[cell], digit);
+        assert_eq!(app.tutor, None);
+    }
+
+    #[test]
+    fn a_is_not_offered_for_eliminations_in_pair_mark_mode() {
+        let p = parse_board(
+            "087000500003000060150600000200500003000089002000073900000430000900005706040007000",
+        )
+        .unwrap();
+        let mut game = Game::new(Difficulty::Hard, p, solve_one(&p).unwrap());
+        loop {
+            let (mode, advice) = tutor::consult(&game);
+            assert_eq!(mode, NoteMode::PairMarks);
+            let Advice::Step(step) = advice else {
+                panic!("expected a step, got {advice:?}")
+            };
+            if matches!(step.effect, Effect::Eliminate(_)) {
+                break;
+            }
+            assert!(game.apply_step(&step, mode));
+        }
+        let mut app = App::new(Store::none());
+        app.start_game(game);
+        show_me(&mut app);
+        assert!(!tutor_of(&app).can_apply());
+        let before = app.game.as_ref().map(|g| (g.values, g.notes));
+        key(&mut app, KeyCode::Char('a'));
+        assert_eq!(app.game.as_ref().map(|g| (g.values, g.notes)), before);
+        assert!(app.tutor.is_some(), "the pane stays up to be read");
+        let screen = render(&app).0;
+        assert!(screen.contains("back to solving"), "{screen}");
+        assert!(!screen.contains("do it for me"), "{screen}");
+    }
+
+    #[test]
+    fn entering_the_nudged_digit_yourself_closes_the_tutor() {
+        let mut app = app_with_game(Difficulty::Easy);
+        key(&mut app, KeyCode::Char('t'));
+        let (cell, digit) = placement(&app);
+        app.apply(Action::Board(BoardAction::Select(
+            row_of(cell),
+            col_of(cell),
+        )));
+        assert!(app.tutor.is_some(), "looking around keeps it open");
+        app.apply(Action::Board(BoardAction::Digit(digit)));
+        assert_eq!(app.tutor, None);
+    }
+
+    #[test]
+    fn undo_closes_a_stale_tutor() {
+        let mut app = app_with_game(Difficulty::Easy);
+        key(&mut app, KeyCode::Char('9')); // (0,2) wants a 4
+        key(&mut app, KeyCode::Right);
+        key(&mut app, KeyCode::Char('t'));
+        assert_eq!(tutor_of(&app).advice, Advice::WrongDigit(idx(0, 2)));
+        assert_eq!(app.game.as_ref().unwrap().selected, (0, 2), "it goes there");
+        key(&mut app, KeyCode::Char('u'));
+        assert_eq!(app.game.as_ref().unwrap().values[idx(0, 2)], 0);
+        assert_eq!(app.tutor, None);
+    }
+
+    #[test]
+    fn a_can_finish_the_puzzle() {
+        let mut app = app_with_game(Difficulty::Easy);
+        let g = app.game.as_ref().unwrap();
+        let mut open: Vec<(usize, u8)> = (0..CELLS)
+            .filter(|&i| !g.given[i])
+            .map(|i| (i, g.solution[i]))
+            .collect();
+        open.pop(); // the tutor's to fill
+        for (i, d) in open {
+            app.apply(Action::Board(BoardAction::Select(row_of(i), col_of(i))));
+            app.apply(Action::Board(BoardAction::Digit(d)));
+        }
+        show_me(&mut app);
+        key(&mut app, KeyCode::Char('a'));
+        assert!(app.game.as_ref().unwrap().completed);
+        assert_eq!(app.top(), Some(Overlay::Won));
+        assert_eq!(app.tutor, None);
+        assert!(!app.new_best);
+    }
+
+    #[test]
+    fn tutor_is_ignored_on_finished_or_paused_games() {
+        let mut app = app_with_game(Difficulty::Easy);
+        app.game.as_mut().unwrap().set_paused(true);
+        app.apply(Action::Tutor);
+        assert_eq!(app.tutor, None, "paused");
+        app.game.as_mut().unwrap().set_paused(false);
+        solve(&mut app);
+        key(&mut app, KeyCode::Esc);
+        key(&mut app, KeyCode::Char('t'));
+        app.apply(Action::Tutor);
+        assert_eq!(app.tutor, None, "finished");
+        assert_eq!(app.game.as_ref().unwrap().tutor_used, 0);
+    }
+
+    #[test]
+    fn starting_a_new_game_closes_the_tutor() {
+        let mut app = app_with_game(Difficulty::Easy);
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('N'));
+        assert_eq!(app.tutor, None);
+        let (p, s) = test_board();
+        app.start_game(Game::new(Difficulty::Easy, p, s));
+        key(&mut app, KeyCode::Char('t'));
+        assert!(app.tutor.is_some());
+        app.start_game(Game::new(Difficulty::Easy, p, s));
+        assert_eq!(app.tutor, None);
+    }
+
+    /// Inkala's puzzle, worked by every strategy the tutor knows until
+    /// none applies, with those candidates as full notes.
+    fn stuck_app() -> App {
+        let p = parse_board(
+            "800000000003600000070090200050007000000045700000100030001000068008500010090000400",
+        )
+        .unwrap();
+        let mut grid = Grid::new(&p);
+        while let Some(step) = grid.next_step() {
+            grid.apply(&step);
+        }
+        let mut game = Game::new(Difficulty::Master, p, solve_one(&p).unwrap());
+        game.values = *grid.values();
+        game.notes = *grid.cands();
+        let mut app = App::new(Store::none());
+        app.start_game(game);
+        app
+    }
+
+    #[test]
+    fn a_places_one_digit_when_the_tutor_is_stuck() {
+        let empty = |app: &App| {
+            let g = app.game.as_ref().unwrap();
+            (0..CELLS).filter(|&i| g.values[i] == 0).collect::<Vec<_>>()
+        };
+        let solved = |app: &App, i: usize| {
+            let g = app.game.as_ref().unwrap();
+            g.values[i] == g.solution[i]
+        };
+        let select = |app: &mut App, i: usize| {
+            app.apply(Action::Board(BoardAction::Select(row_of(i), col_of(i))));
+        };
+
+        // On an empty cell, that's the one it fills.
+        let mut app = stuck_app();
+        let target = *empty(&app).last().unwrap();
+        select(&mut app, target);
+        key(&mut app, KeyCode::Char('t'));
+        assert_eq!(tutor_of(&app).advice, Advice::Stuck);
+        assert!(tutor_of(&app).can_apply(), "even at the nudge");
+        key(&mut app, KeyCode::Char('a'));
+        assert!(solved(&app, target));
+        assert_eq!(app.tutor, None);
+
+        // On a filled cell, it fills the first empty one.
+        let mut app = stuck_app();
+        let first = empty(&app)[0];
+        let given = (0..CELLS).find(|&i| !empty(&app).contains(&i)).unwrap();
+        select(&mut app, given);
+        key(&mut app, KeyCode::Char('t'));
+        assert_eq!(tutor_of(&app).advice, Advice::Stuck);
+        key(&mut app, KeyCode::Char('a'));
+        assert!(solved(&app, first));
     }
 }

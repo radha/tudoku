@@ -43,12 +43,36 @@ puzzle. Next launch, the title screen offers **Continue** (Enter or `c`);
 picking a level instead starts fresh.
 
 Best times are kept per level and only count puzzles solved **without
-hints**. Everything lives in two small JSON files:
+the tutor**. Everything lives in two small JSON files:
 
 - Linux: `~/.local/share/tudoku/` (or `$XDG_DATA_HOME/tudoku/`)
 - macOS: `~/Library/Application Support/tudoku/`
 
 Delete that folder to start over.
+
+## Tutor
+
+Stuck? Press `t`. The tutor reads your board and names the easiest
+strategy that makes progress, and only its name ("Look for HIDDEN
+SINGLE"), so you can still find it yourself. The board stays in play
+while the nudge is up.
+
+- `t` again shows the step on your board: why it holds, and which digit
+  it places or which candidates it removes, by cell name (`r3c4` is row
+  3, column 4).
+- `a` does it for you: it places the digit, or clears those candidates
+  from your notes.
+- `Esc` closes the tutor. The next `t` starts afresh from the board as it
+  is then.
+
+A wrong digit, or notes that cross out the digit a cell needs, come
+first. Until every empty cell has notes, the tutor takes your notes for
+pair marks, goes by the placed digits alone and says so; it can still
+place a digit for you then, but leaves eliminations to you. If no
+strategy it knows applies, it offers to place one correct digit.
+
+Every opening of the tutor counts on the header's 🎓 counter, and a
+puzzle you asked it about can't set a best time.
 
 ## Controls
 
@@ -61,34 +85,36 @@ Delete that folder to start over.
 | n                              | toggle pencil-mark mode                   |
 | 0 / x / e / Backspace / Delete | erase cell                                |
 | u / Ctrl+Z                     | undo                                      |
-| H (capital h)                  | hint: fills the next logical cell, locked |
+| t                              | tutor: names a strategy; t again shows it |
+| a                              | tutor: do it for me                       |
 | N (capital n)                  | new puzzle, same difficulty               |
 | d                              | difficulty picker                         |
 | p                              | pause (automatic when you switch away)    |
 | ? / F1                         | help                                      |
 | q                              | quit (your game is saved)                 |
-| Esc                            | close popup / view the finished board     |
+| Esc                            | close popup or tutor, see finished board  |
 
 On the title screen: `c` or `Enter` continues a saved game; `1-5`,
-arrows/hjkl + `Enter`, or a click starts a level. Hints name the technique
-that finds the cell ("Hint: X-Wing, then a single"), so they teach as well
-as help.
+arrows/hjkl + `Enter`, or a click starts a level.
 
 ### Mouse
 
 Everything is clickable: cells to select, the number pad to fill, and all
-action buttons (Notes, Undo, Hint, Erase, New, Level, Pause, Help).
+action buttons (Notes, Undo, Tutor, Erase, New, Level, Pause, Help), and
+the keys in the tutor's pane.
 Clicking outside a popup closes it, just like Esc.
 
 ## Features
 
 - 5 difficulty levels graded by solving technique, all pure logic
-- Pencil marks, undo, hints that name their technique, erase
+- Pencil marks, undo, erase
+- A tutor that names the next strategy, shows it on your board and can
+  apply it, with a 🎓 counter of how often you asked
 - Mistake highlighting, remaining-digit counters, progress bar, timer
-- Autosave and resume, hint-free best times per level
+- Autosave and resume, tutor-free best times per level
 - Pause that hides the board and stops the clock, automatically when
   the terminal loses focus
-- Win screen with time / mistakes / hints and your record
+- Win screen with time / mistakes / tutor use and your record
 
 ## Self-checks
 

@@ -20,7 +20,7 @@ const STATS_FILE: &str = "stats.json";
 /// Bumped when the level names change. Version 0 is the five-level build.
 const STATS_VERSION: u32 = 1;
 
-/// Per-level record. Best times only count games solved without hints.
+/// Per-level record. Best times only count games solved without the tutor.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LevelStats {
     pub solved: u32,
@@ -44,12 +44,12 @@ impl Stats {
     }
 
     /// Count a solve. Returns true when it set a new best time, which only
-    /// a hint-free solve can do.
-    pub fn record(&mut self, level: Difficulty, time: Duration, hints_used: u32) -> bool {
+    /// a solve without help (`helped == 0`) can do.
+    pub fn record(&mut self, level: Difficulty, time: Duration, helped: u32) -> bool {
         let entry = self.levels.entry(level).or_default();
         entry.solved = entry.solved.saturating_add(1);
         let ms = u64::try_from(time.as_millis()).unwrap_or(u64::MAX);
-        let is_best = hints_used == 0 && entry.best_ms.is_none_or(|best| ms < best);
+        let is_best = helped == 0 && entry.best_ms.is_none_or(|best| ms < best);
         if is_best {
             entry.best_ms = Some(ms);
         }
@@ -209,7 +209,7 @@ mod tests {
     }
 
     #[test]
-    fn best_times_count_only_hint_free_solves() {
+    fn best_times_count_only_tutor_free_solves() {
         let mut stats = Stats::default();
         let secs = Duration::from_secs;
         assert!(
@@ -218,7 +218,7 @@ mod tests {
         );
         assert!(
             !stats.record(Difficulty::Hard, secs(100), 2),
-            "hints never count"
+            "helped solves never count"
         );
         assert!(!stats.record(Difficulty::Hard, secs(400), 0), "slower");
         assert!(stats.record(Difficulty::Hard, secs(200), 0), "faster");

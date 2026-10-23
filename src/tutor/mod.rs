@@ -1,9 +1,6 @@
 //! The tutor: reads the player's board, checks it, and names the easiest
 //! strategy that makes progress.
 
-// Nothing outside the tests calls this until the tutor pane is wired in.
-#![allow(dead_code)]
-
 use crate::game::Game;
 use crate::logic::{Grid, Step};
 use crate::sudoku::{Board, CELLS, candidates_mask};
