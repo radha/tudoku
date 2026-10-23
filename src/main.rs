@@ -259,8 +259,22 @@ fn offline_check() {
 
 /// Developer tool: search dealt puzzles for a worked example of each
 /// strategy named in `names`, or of every one that has none yet, and print
-/// the lines for `src/tutor/examples.txt`.
-fn find_examples(names: &[String]) {
+/// the lines for `src/tutor/examples.txt`. `--puzzles N` sets how many
+/// dealt puzzles to search (3000 by default).
+fn find_examples(args: &[String]) {
+    let mut names = Vec::new();
+    let mut puzzles = 3000;
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        if arg == "--puzzles" {
+            puzzles = args.next().and_then(|n| n.parse().ok()).unwrap_or_else(|| {
+                eprintln!("tudoku: --puzzles needs a number");
+                std::process::exit(2);
+            });
+        } else {
+            names.push(arg.clone());
+        }
+    }
     let wanted: Vec<Technique> = if names.is_empty() {
         Technique::ALL
             .iter()
@@ -278,7 +292,7 @@ fn find_examples(names: &[String]) {
             })
             .collect()
     };
-    for line in tutor::examples::find_examples(&wanted, 7, 3000) {
+    for line in tutor::examples::find_examples(&wanted, 7, puzzles) {
         println!("{line}");
     }
 }

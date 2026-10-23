@@ -117,6 +117,42 @@ pub fn lesson(t: Technique) -> Lesson {
             ],
             roles: ("corners", ""),
         },
+        Skyscraper => Lesson {
+            steps: &[
+                "Find two columns where 4 fits in only two cells.",
+                "One end of each sits in the same row: the base. Both can't be the digit.",
+                "So at least one of the other ends, the tops, is the digit.",
+                "Any cell that sees both tops can't be it.",
+            ],
+            roles: ("top", "base"),
+        },
+        TwoStringKite => Lesson {
+            steps: &[
+                "Find a row and a column where a digit fits in only two cells each.",
+                "One end of each sits in the same box: the knot. Both can't be the digit.",
+                "So one of the two far ends is the digit.",
+                "Any cell that sees both far ends can't be it.",
+            ],
+            roles: ("end", "knot"),
+        },
+        Crane => Lesson {
+            steps: &[
+                "Find a box and a row or column outside it where a digit fits in only two cells each.",
+                "One end of each shares a line with the other: the link. Both can't be the digit.",
+                "So one of the two far ends is the digit.",
+                "Any cell that sees both far ends can't be it.",
+            ],
+            roles: ("end", "link"),
+        },
+        EmptyRectangle => Lesson {
+            steps: &[
+                "In a box, find a digit whose spots all lie in one row and one column of it.",
+                "Find a column or row outside the box where it fits in only two cells, one lined up with that row or column.",
+                "If that cell is the digit, the box's digit is in the other line.",
+                "Either way, the cell where the pair's other end meets that line can't be it.",
+            ],
+            roles: ("pair", "box"),
+        },
         XYWing => Lesson {
             steps: &[
                 "Find a cell where only two digits fit: the pivot.",

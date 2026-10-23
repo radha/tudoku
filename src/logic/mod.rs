@@ -8,6 +8,7 @@
 
 mod basic;
 mod fish;
+mod single_digit;
 mod wings;
 
 use crate::sudoku::{
@@ -29,6 +30,10 @@ pub enum Technique {
     NakedQuad,
     HiddenQuad,
     XWing,
+    Skyscraper,
+    TwoStringKite,
+    Crane,
+    EmptyRectangle,
     XYWing,
     Swordfish,
     XYZWing,
@@ -49,6 +54,10 @@ impl Technique {
         Technique::NakedQuad,
         Technique::HiddenQuad,
         Technique::XWing,
+        Technique::Skyscraper,
+        Technique::TwoStringKite,
+        Technique::Crane,
+        Technique::EmptyRectangle,
         Technique::XYWing,
         Technique::Swordfish,
         Technique::XYZWing,
@@ -69,6 +78,10 @@ impl Technique {
             Technique::NakedQuad => "naked quad",
             Technique::HiddenQuad => "hidden quad",
             Technique::XWing => "X-Wing",
+            Technique::Skyscraper => "Skyscraper",
+            Technique::TwoStringKite => "2-String Kite",
+            Technique::Crane => "Crane",
+            Technique::EmptyRectangle => "Empty Rectangle",
             Technique::XYWing => "XY-Wing",
             Technique::Swordfish => "Swordfish",
             Technique::XYZWing => "XYZ-Wing",
@@ -114,7 +127,6 @@ pub struct Mark {
 /// ends can't both be true.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinkKind {
-    #[allow(dead_code)] // the chain techniques build these
     Strong,
     Weak,
 }
@@ -290,6 +302,10 @@ impl Grid {
             NakedQuad => self.naked_subset(4, t),
             HiddenQuad => self.hidden_subset(4, t),
             XWing => self.fish(2, t),
+            Skyscraper => self.skyscraper(),
+            TwoStringKite => self.two_string_kite(),
+            Crane => self.crane(),
+            EmptyRectangle => self.empty_rectangle(),
             XYWing => self.xy_wing(),
             Swordfish => self.fish(3, t),
             XYZWing => self.xyz_wing(),
@@ -346,7 +362,6 @@ impl Grid {
 
     /// The two cells of house `house` where `digit` can go, if there are
     /// exactly two.
-    #[allow(dead_code)] // the chain techniques build on this
     fn conjugates(&self, house: usize, digit: u8) -> Option<(usize, usize)> {
         let pos = self.positions(&HOUSES[house], 1 << digit);
         if pos.count_ones() != 2 {
@@ -480,7 +495,7 @@ mod tests {
             Technique::from_name("Naked Single"),
             Some(Technique::NakedSingle)
         );
-        assert_eq!(Technique::from_name("skyscraper"), None);
+        assert_eq!(Technique::from_name("dragon"), None);
         assert_eq!(Technique::from_name(""), None);
     }
 
@@ -583,6 +598,7 @@ mod tests {
             for &t in Technique::ALL {
                 let Some(step) = grid.find(t) else { continue };
                 assert_eq!(step.technique, t);
+                assert_consistent(grid, &step);
                 found[t as usize] += 1;
                 match step.effect {
                     Effect::Place { cell, digit } => {
@@ -613,54 +629,57 @@ mod tests {
         }
     }
 
-    /// Every step's pattern points at the board as it stood before the step.
+    /// A step's pattern points at the board as it stood before the step.
+    fn assert_consistent(g: &Grid, step: &Step) {
+        let (t, p) = (step.technique, &step.pattern);
+        let removals: &[(usize, u16)] = match &step.effect {
+            Effect::Place { cell, .. } => {
+                assert_eq!(g.values[*cell], 0, "{t:?} places on a filled cell");
+                &[]
+            }
+            Effect::Eliminate(removals) => removals,
+        };
+        let marked = |cell, digit| p.marks.iter().any(|m| (m.cell, m.digit) == (cell, digit));
+        let removed = |cell, digit: u8| {
+            removals
+                .iter()
+                .any(|&(c, mask)| c == cell && mask & (1 << digit) != 0)
+        };
+        for m in &p.marks {
+            assert_eq!(g.values[m.cell], 0, "{t:?} marks filled {}", rc(m.cell));
+            assert_ne!(
+                g.cands[m.cell] & (1 << m.digit),
+                0,
+                "{t:?} marks a non-candidate"
+            );
+        }
+        for l in &p.links {
+            for (cell, digit) in [l.from, l.to] {
+                assert!(marked(cell, digit) || removed(cell, digit), "{t:?}: {l:?}");
+            }
+        }
+        for &(cell, mask) in removals {
+            assert_ne!(mask, 0, "{t:?} removes nothing at {}", rc(cell));
+            assert_eq!(mask & !g.cands[cell], 0, "{t:?} removes a non-candidate");
+            for d in bits(mask) {
+                assert!(!marked(cell, d as u8), "{t:?} removes its own mark");
+            }
+        }
+        if let Some(d) = p.digit {
+            assert!(p.marks.iter().all(|m| m.digit == d), "{t:?}");
+            assert!(removals.iter().all(|&(_, mask)| mask == 1 << d), "{t:?}");
+            if let Effect::Place { digit, .. } = step.effect {
+                assert_eq!(digit, d, "{t:?}");
+            }
+        }
+        assert!(p.houses.iter().all(|&h| h < HOUSES.len()), "{t:?}");
+        assert!(p.cells.iter().all(|&c| g.values[c] == 0), "{t:?}");
+        assert!(!step.why.is_empty(), "{t:?}");
+    }
+
+    /// Every step the solver takes is consistent.
     #[test]
     fn patterns_are_consistent() {
-        dealt_states(|g, step, _| {
-            let (t, p) = (step.technique, &step.pattern);
-            let removals: &[(usize, u16)] = match &step.effect {
-                Effect::Place { cell, .. } => {
-                    assert_eq!(g.values[*cell], 0, "{t:?} places on a filled cell");
-                    &[]
-                }
-                Effect::Eliminate(removals) => removals,
-            };
-            let marked = |cell, digit| p.marks.iter().any(|m| (m.cell, m.digit) == (cell, digit));
-            let removed = |cell, digit: u8| {
-                removals
-                    .iter()
-                    .any(|&(c, mask)| c == cell && mask & (1 << digit) != 0)
-            };
-            for m in &p.marks {
-                assert_eq!(g.values[m.cell], 0, "{t:?} marks filled {}", rc(m.cell));
-                assert_ne!(
-                    g.cands[m.cell] & (1 << m.digit),
-                    0,
-                    "{t:?} marks a non-candidate"
-                );
-            }
-            for l in &p.links {
-                for (cell, digit) in [l.from, l.to] {
-                    assert!(marked(cell, digit) || removed(cell, digit), "{t:?}: {l:?}");
-                }
-            }
-            for &(cell, mask) in removals {
-                assert_ne!(mask, 0, "{t:?} removes nothing at {}", rc(cell));
-                assert_eq!(mask & !g.cands[cell], 0, "{t:?} removes a non-candidate");
-                for d in bits(mask) {
-                    assert!(!marked(cell, d as u8), "{t:?} removes its own mark");
-                }
-            }
-            if let Some(d) = p.digit {
-                assert!(p.marks.iter().all(|m| m.digit == d), "{t:?}");
-                assert!(removals.iter().all(|&(_, mask)| mask == 1 << d), "{t:?}");
-                if let Effect::Place { digit, .. } = step.effect {
-                    assert_eq!(digit, d, "{t:?}");
-                }
-            }
-            assert!(p.houses.iter().all(|&h| h < HOUSES.len()), "{t:?}");
-            assert!(p.cells.iter().all(|&c| g.values[c] == 0), "{t:?}");
-            assert!(!step.why.is_empty(), "{t:?}");
-        });
+        dealt_states(|g, step, _| assert_consistent(g, step));
     }
 }

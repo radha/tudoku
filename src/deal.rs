@@ -100,7 +100,8 @@ pub fn level_of(t: Technique) -> Difficulty {
         Pointing | Claiming | NakedPair | HiddenPair | NakedTriple | HiddenTriple => {
             Difficulty::Medium
         }
-        NakedQuad | HiddenQuad | XWing | XYWing => Difficulty::Hard,
+        NakedQuad | HiddenQuad | XWing | Skyscraper | TwoStringKite | Crane | EmptyRectangle
+        | XYWing => Difficulty::Hard,
         Swordfish | XYZWing | Jellyfish => Difficulty::Master,
     }
 }
