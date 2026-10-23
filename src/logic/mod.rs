@@ -404,10 +404,16 @@ impl Grid {
 
     /// The easiest available deduction, if any technique finds one.
     pub fn next_step(&self) -> Option<Step> {
+        self.easiest(Technique::ALL)
+    }
+
+    /// The first deduction any of `techniques` finds, trying them in
+    /// order.
+    fn easiest(&self, techniques: &[Technique]) -> Option<Step> {
         if self.is_broken() {
             return None;
         }
-        Technique::ALL.iter().find_map(|&t| self.find(t))
+        techniques.iter().find_map(|&t| self.find(t))
     }
 
     /// The first deduction technique `t` finds, if any.
@@ -535,16 +541,27 @@ pub struct Grade {
     pub steps: u32,
 }
 
-/// Solve with logic alone. `None` means the puzzle needs a technique
-/// beyond this solver (or guessing).
+/// Solve with logic alone, using no technique harder than `ceiling`.
+/// `None` means the puzzle needs a harder one, or one beyond this solver
+/// (or guessing).
+pub fn grade_within(puzzle: &Board, ceiling: Technique) -> Option<Grade> {
+    grade_using(puzzle, &Technique::ALL[..=ceiling as usize])
+}
+
+/// Solve with logic alone, using every technique.
+#[cfg(test)]
 pub fn grade(puzzle: &Board) -> Option<Grade> {
+    grade_using(puzzle, Technique::ALL)
+}
+
+fn grade_using(puzzle: &Board, techniques: &[Technique]) -> Option<Grade> {
     let mut grid = Grid::new(puzzle);
     let mut grade = Grade {
         hardest: Technique::FullHouse,
         steps: 0,
     };
     while !grid.is_solved() {
-        let step = grid.next_step()?;
+        let step = grid.easiest(techniques)?;
         grade.hardest = grade.hardest.max(step.technique);
         grade.steps += 1;
         grid.apply(&step);
@@ -761,6 +778,18 @@ mod tests {
             assert!(sudoku::is_unique(&p));
             assert_eq!(grade(&p).map(|g| g.hardest), Some(want), "{puzzle}");
         }
+    }
+
+    #[test]
+    fn grading_within_a_ceiling_gives_up_on_harder_steps() {
+        let p = parse_board(
+            "087000500003000060150600000200500003000089002000073900000430000900005706040007000",
+        )
+        .unwrap();
+        assert_eq!(grade(&p).map(|g| g.hardest), Some(Technique::XWing));
+        assert_eq!(grade_within(&p, Technique::XWing), grade(&p));
+        assert_eq!(grade_within(&p, Technique::DeathBlossom), grade(&p));
+        assert_eq!(grade_within(&p, Technique::HiddenQuad), None);
     }
 
     /// Every detector, run at every state of the dealt puzzles, must agree

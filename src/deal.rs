@@ -80,6 +80,14 @@ impl Difficulty {
         }
     }
 
+    /// The hardest technique this level's puzzles may need.
+    fn ceiling(self) -> Technique {
+        *Technique::ALL
+            .iter()
+            .rfind(|&&t| level_of(t) == self)
+            .expect("every level has a technique")
+    }
+
     /// How many cells to blank. The harder levels dig until no more cells
     /// can go, which leaves ~22-27 clues.
     fn holes(self) -> usize {
@@ -125,7 +133,9 @@ impl Deal {
 fn try_deal<R: Rng>(level: Difficulty, rng: &mut R) -> Option<Deal> {
     let solution = sudoku::full_solution(rng);
     let puzzle = sudoku::dig(&solution, level.holes(), rng);
-    let grade = logic::grade(&puzzle)?;
+    // Grading gives up at the first step too hard for the level, so a
+    // puzzle that belongs higher up never runs the hardest techniques.
+    let grade = logic::grade_within(&puzzle, level.ceiling())?;
     level.accepts(grade.hardest).then_some(Deal {
         puzzle,
         solution,
@@ -205,6 +215,31 @@ mod tests {
         assert!(Difficulty::Zen.accepts(Technique::DeathBlossom));
         assert!(Difficulty::Master.accepts(Technique::Jellyfish));
         assert!(!Difficulty::Master.accepts(Technique::XWing));
+    }
+
+    #[test]
+    fn a_level_s_ceiling_is_its_hardest_technique() {
+        for level in Difficulty::ALL {
+            let ceiling = level.ceiling();
+            assert!(level.accepts(ceiling), "{level:?}");
+            let harder = &Technique::ALL[ceiling as usize + 1..];
+            assert!(harder.iter().all(|&t| level_of(t) > level), "{level:?}");
+        }
+    }
+
+    #[test]
+    fn grading_up_to_a_level_decides_like_grading_in_full() {
+        let mut rng = StdRng::seed_from_u64(31337);
+        for _ in 0..25 {
+            let solution = sudoku::full_solution(&mut rng);
+            let puzzle = sudoku::dig(&solution, CELLS, &mut rng);
+            let full = logic::grade(&puzzle);
+            for level in Difficulty::ALL {
+                let capped = logic::grade_within(&puzzle, level.ceiling());
+                let fits = |g: &Grade| level.accepts(g.hardest);
+                assert_eq!(capped.filter(fits), full.filter(fits), "{level:?}");
+            }
+        }
     }
 
     #[test]
