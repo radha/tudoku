@@ -7,6 +7,7 @@
 //! so it can be named, explained and drawn on the board.
 
 mod basic;
+mod colouring;
 mod fish;
 mod single_digit;
 mod uniqueness;
@@ -40,6 +41,7 @@ pub enum Technique {
     XYZWing,
     WWing,
     FinnedXWing,
+    SimpleColouring,
     UniqueRectangle,
     BugPlusOne,
     Jellyfish,
@@ -71,6 +73,7 @@ impl Technique {
         Technique::XYZWing,
         Technique::WWing,
         Technique::FinnedXWing,
+        Technique::SimpleColouring,
         Technique::UniqueRectangle,
         Technique::BugPlusOne,
         Technique::Jellyfish,
@@ -102,6 +105,7 @@ impl Technique {
             Technique::XYZWing => "XYZ-Wing",
             Technique::WWing => "W-Wing",
             Technique::FinnedXWing => "finned X-Wing",
+            Technique::SimpleColouring => "Simple Colouring",
             Technique::UniqueRectangle => "Unique Rectangle",
             Technique::BugPlusOne => "BUG+1",
             Technique::Jellyfish => "Jellyfish",
@@ -333,6 +337,7 @@ impl Grid {
             XYZWing => self.xyz_wing(),
             WWing => self.w_wing(),
             FinnedXWing => self.finned_fish(2, t),
+            SimpleColouring => self.colouring(),
             UniqueRectangle => self.unique_rectangle(),
             BugPlusOne => self.bug_plus_one(),
             Jellyfish => self.fish(4, t),
@@ -665,6 +670,7 @@ mod tests {
             XYZWing,
             WWing,
             FinnedXWing,
+            SimpleColouring,
             UniqueRectangle,
             BugPlusOne,
             Jellyfish,

@@ -192,6 +192,15 @@ pub fn lesson(t: Technique) -> Lesson {
             ],
             roles: ("removed digit", "bridge"),
         },
+        SimpleColouring => Lesson {
+            steps: &[
+                "Pairs: houses where a digit fits two cells. Pairs sharing a cell make a chain of 3+ cells.",
+                "Each pair holds it once, so colour the chain A, B, A, B: one colour is all the digit, the other none.",
+                "Trap: a cell outside the chain seeing an A and a B sees the digit either way. Not it.",
+                "Wrap: two cells of one colour seeing each other can't both be it. That colour is false: clear it.",
+            ],
+            roles: ("colour A", "colour B"),
+        },
         UniqueRectangle => Lesson {
             steps: &[
                 "Four rectangle corners in two boxes fit the same two digits. Held only by them, they could swap: two solutions. A puzzle has one.",
