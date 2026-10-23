@@ -22,18 +22,18 @@ are blank. A built-in human-style solver works each puzzle with the
 techniques people use, easiest first, and a level is defined by the
 hardest one the puzzle needs:
 
-| Level  | Hardest technique needed                          | Clues  |
-| ------ | ------------------------------------------------- | ------ |
-| Easy   | singles                                           | ~31    |
-| Medium | pointing, claiming, pairs & triples               | ~22-27 |
-| Hard   | quads, X-Wing, XY-Wing                            | ~22-27 |
-| Master | Swordfish, XYZ-Wing, Jellyfish                    | ~22-27 |
-| Zen    | chains & sets (coming)                            | ~22-27 |
+| Level  | Strategies it can need                                                          | Clues  |
+| ------ | ------------------------------------------------------------------------------- | ------ |
+| Easy   | full house, naked & hidden singles                                              | ~31    |
+| Medium | pointing, claiming, naked & hidden pairs and triples                            | ~22-27 |
+| Hard   | quads, X-Wing, Skyscraper, 2-String Kite, Crane, Empty Rectangle, XY-Wing       | ~22-27 |
+| Master | Swordfish, Jellyfish, finned fish, XYZ/W/WXYZ-Wing, Simple Colouring, Unique Rectangle, BUG+1 | ~22-27 |
+| Zen    | Remote Pair, X-Chain, XY-Chain, AIC, ALS-XZ, ALS-XY-Wing, Sue de Coq, Death Blossom | ~22-27 |
 
 Every puzzle has exactly one solution (cells are removed from a random
 complete grid only while a solver confirms uniqueness) and can be finished
 by logic alone — never by guessing. Puzzles are dealt on all CPU cores in
-the background; even Zen typically takes a fraction of a second.
+the background; every level typically takes well under a second.
 
 ## Saves and best times
 
@@ -77,6 +77,24 @@ strategy it knows applies, it offers to place one correct digit.
 
 Every opening of the tutor counts on the header's 🎓 counter, and a
 puzzle you asked it about can't set a best time.
+
+### Strategies
+
+The tutor knows 36 strategies, easiest first within each level:
+
+- **Easy:** full house, naked single, hidden single
+- **Medium:** pointing, claiming, naked pair, hidden pair, naked triple,
+  hidden triple
+- **Hard:** naked quad, hidden quad, X-Wing, Skyscraper, 2-String Kite,
+  Crane, Empty Rectangle, XY-Wing
+- **Master:** Swordfish, XYZ-Wing, W-Wing, finned X-Wing, Simple
+  Colouring, Unique Rectangle, BUG+1, Jellyfish, finned Swordfish,
+  WXYZ-Wing, finned Jellyfish
+- **Zen:** Remote Pair, X-Chain, XY-Chain, AIC, ALS-XZ, ALS-XY-Wing,
+  Sue de Coq, Death Blossom
+
+Remote Pair is taught, but it is rarely the next step: naked pairs and
+Simple Colouring usually get there first.
 
 ## Controls
 
@@ -124,9 +142,11 @@ Clicking outside a popup closes it, just like Esc.
 
 ```sh
 cargo test                               # solver, grader, generator + UI tests
-cargo run --release -- --offline-check   # deals one puzzle per level, checks + reports it
+cargo run --release -- --offline-check   # deals 5 puzzles per level, checks them, reports median deal time
 cargo run --release -- --find-examples   # finds the tutor's worked examples still missing
 ```
 
-`--find-examples` takes strategy names too (`--find-examples X-Wing
-"naked pair"`) and prints lines for `src/tutor/examples.txt`.
+`--find-examples` is a developer tool for the tutor's worked examples. It
+takes strategy names (`--find-examples X-Wing "naked pair"`) and prints
+lines for `src/tutor/examples.txt`; `--puzzles N` sets how many dealt
+puzzles to search (3000 by default).

@@ -29,7 +29,6 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use rand::SeedableRng;
 use ratatui::{Terminal, backend::CrosstermBackend};
 
 use crate::app::App;
@@ -237,22 +236,30 @@ fn event_loop(
 /// the generator works without any I/O or network. Reports what each
 /// puzzle actually is, not what the level promises.
 fn offline_check() {
-    let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+    const DEALS: usize = 5;
     for level in Difficulty::ALL {
-        let started = Instant::now();
-        let d = deal::deal(level, &mut rng);
-        let took = started.elapsed();
-        assert!(sudoku::is_valid_solution(&d.solution), "{level:?}");
-        assert!(sudoku::is_unique(&d.puzzle), "{level:?}");
-        assert_eq!(sudoku::solve_one(&d.puzzle), Some(d.solution), "{level:?}");
-        assert!(level.accepts(d.grade.hardest), "{level:?}");
+        let mut times = Vec::with_capacity(DEALS);
+        let mut last = None;
+        for _ in 0..DEALS {
+            let started = Instant::now();
+            let d = deal::deal_fast(level);
+            times.push(started.elapsed());
+            assert!(sudoku::is_valid_solution(&d.solution), "{level:?}");
+            assert!(sudoku::is_unique(&d.puzzle), "{level:?}");
+            assert_eq!(sudoku::solve_one(&d.puzzle), Some(d.solution), "{level:?}");
+            assert!(level.accepts(d.grade.hardest), "{level:?}");
+            last = Some(d);
+        }
+        times.sort();
+        let median = times[DEALS / 2];
+        let d = last.expect("at least one deal");
         println!(
-            "{:<6}  {} givens, hardest step: {:<17} ({} steps)  dealt in {:.0?}: OK",
+            "{:<6}  {} givens, hardest step: {:<17} ({} steps)  median of {DEALS} deals: {:.0?}: OK",
             level.name(),
             d.givens(),
             d.grade.hardest.name(),
             d.grade.steps,
-            took,
+            median,
         );
     }
 }
