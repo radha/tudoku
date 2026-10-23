@@ -97,100 +97,167 @@ pub fn candidates_mask(board: &Board, i: usize) -> u16 {
     !used & ALL_DIGITS
 }
 
-/// Find the empty cell with the fewest candidates (MRV heuristic), stopping
-/// early once a cell with exactly one candidate is found. `None` means the
-/// board is full; a returned mask of `0` means that cell is unsolvable.
-fn find_mrv_cell(board: &Board) -> Option<(usize, u16)> {
-    let mut best: Option<(usize, u16)> = None;
-    for i in (0..CELLS).filter(|&i| board[i] == 0) {
-        let mask = candidates_mask(board, i);
-        match mask.count_ones() {
-            0 => return Some((i, 0)),
-            1 => return Some((i, mask)),
-            n if best.is_none_or(|(_, m)| n < m.count_ones()) => best = Some((i, mask)),
-            _ => {}
+/// Each cell's row, column and box.
+static HOUSE_OF: [[u8; 3]; CELLS] = build_house_of();
+
+const fn build_house_of() -> [[u8; 3]; CELLS] {
+    let mut out = [[0u8; 3]; CELLS];
+    let mut i = 0;
+    while i < CELLS {
+        out[i] = [row_of(i) as u8, col_of(i) as u8, box_of_cell(i) as u8];
+        i += 1;
+    }
+    out
+}
+
+/// A board being searched, with the digits each row, column and box
+/// already holds kept up to date, so a cell's candidates are three
+/// lookups rather than a pass over its 20 peers.
+struct Solver {
+    board: Board,
+    /// Bitmasks of used digits: `used[0]` per row, `[1]` per column,
+    /// `[2]` per box.
+    used: [[u16; N]; 3],
+}
+
+impl Solver {
+    fn new(board: &Board) -> Solver {
+        let mut used = [[0; N]; 3];
+        for (i, &v) in board.iter().enumerate() {
+            for (k, &h) in HOUSE_OF[i].iter().enumerate() {
+                used[k][usize::from(h)] |= 1 << v;
+            }
+        }
+        Solver {
+            board: *board,
+            used,
         }
     }
-    best
+
+    /// The same as [`candidates_mask`] on the current board.
+    fn candidates(&self, i: usize) -> u16 {
+        let [r, c, b] = HOUSE_OF[i].map(usize::from);
+        !(self.used[0][r] | self.used[1][c] | self.used[2][b]) & ALL_DIGITS
+    }
+
+    /// Put `v` in empty cell `i`, which must be one of its candidates.
+    fn place(&mut self, i: usize, v: u8) {
+        for (k, &h) in HOUSE_OF[i].iter().enumerate() {
+            self.used[k][usize::from(h)] |= 1 << v;
+        }
+        self.board[i] = v;
+    }
+
+    /// Empty cell `i` again after [`Solver::place`].
+    fn lift(&mut self, i: usize) {
+        let v = self.board[i];
+        for (k, &h) in HOUSE_OF[i].iter().enumerate() {
+            self.used[k][usize::from(h)] &= !(1 << v);
+        }
+        self.board[i] = 0;
+    }
+
+    /// Find the empty cell with the fewest candidates (MRV heuristic),
+    /// stopping early once a cell with exactly one candidate is found.
+    /// `None` means the board is full; a returned mask of `0` means that
+    /// cell is unsolvable.
+    fn mrv_cell(&self) -> Option<(usize, u16)> {
+        let mut best: Option<(usize, u16)> = None;
+        for i in (0..CELLS).filter(|&i| self.board[i] == 0) {
+            let mask = self.candidates(i);
+            match mask.count_ones() {
+                0 => return Some((i, 0)),
+                1 => return Some((i, mask)),
+                n if best.is_none_or(|(_, m)| n < m.count_ones()) => best = Some((i, mask)),
+                _ => {}
+            }
+        }
+        best
+    }
+
+    fn count(&mut self, limit: u32) -> u32 {
+        let (cell, mask) = match self.mrv_cell() {
+            None => return 1, // no empties: one solution found
+            Some((_, 0)) => return 0,
+            Some(cm) => cm,
+        };
+        let mut count = 0;
+        for v in (1..=9u8).filter(|v| mask & (1 << v) != 0) {
+            self.place(cell, v);
+            count += self.count(limit.saturating_sub(count));
+            self.lift(cell);
+            if count >= limit {
+                break;
+            }
+        }
+        count
+    }
+
+    /// Fill the board, leaving it filled if that works and as it was if
+    /// not.
+    fn solve(&mut self) -> bool {
+        let (cell, mask) = match self.mrv_cell() {
+            None => return true,
+            Some((_, 0)) => return false,
+            Some(cm) => cm,
+        };
+        for v in (1..=9u8).filter(|v| mask & (1 << v) != 0) {
+            self.place(cell, v);
+            if self.solve() {
+                return true;
+            }
+            self.lift(cell);
+        }
+        false
+    }
+
+    fn fill_random<R: Rng>(&mut self, rng: &mut R) -> bool {
+        let (cell, mask) = match self.mrv_cell() {
+            None => return true,
+            Some((_, 0)) => return false,
+            Some(cm) => cm,
+        };
+        let mut cands = [0u8; N];
+        let mut n = 0;
+        for v in (1..=9u8).filter(|v| mask & (1 << v) != 0) {
+            cands[n] = v;
+            n += 1;
+        }
+        let cands = &mut cands[..n];
+        cands.shuffle(rng);
+        for &v in cands.iter() {
+            self.place(cell, v);
+            if self.fill_random(rng) {
+                return true;
+            }
+            self.lift(cell);
+        }
+        false
+    }
 }
 
 /// Count solutions up to `limit` using MRV backtracking. Fast enough for
 /// uniqueness checks during generation.
-pub fn count_solutions(board: &mut Board, limit: u32) -> u32 {
-    let (cell, mask) = match find_mrv_cell(board) {
-        None => return 1, // no empties: one solution found
-        Some((_, 0)) => return 0,
-        Some(cm) => cm,
-    };
-    let mut count = 0;
-    for v in (1..=9u8).filter(|v| mask & (1 << v) != 0) {
-        board[cell] = v;
-        count += count_solutions(board, limit.saturating_sub(count));
-        board[cell] = 0;
-        if count >= limit {
-            break;
-        }
-    }
-    count
+pub fn count_solutions(board: &Board, limit: u32) -> u32 {
+    Solver::new(board).count(limit)
 }
 
 /// True when the puzzle has exactly one solution.
 pub fn is_unique(puzzle: &Board) -> bool {
-    let mut probe = *puzzle;
-    count_solutions(&mut probe, 2) == 1
+    count_solutions(puzzle, 2) == 1
 }
 
 /// Solve the puzzle, returning the first solution found (if any).
 pub fn solve_one(board: &Board) -> Option<Board> {
-    let mut b = *board;
-    solve_into(&mut b).then_some(b)
-}
-
-fn solve_into(board: &mut Board) -> bool {
-    let (cell, mask) = match find_mrv_cell(board) {
-        None => return true,
-        Some((_, 0)) => return false,
-        Some(cm) => cm,
-    };
-    for v in (1..=9u8).filter(|v| mask & (1 << v) != 0) {
-        board[cell] = v;
-        if solve_into(board) {
-            return true;
-        }
-    }
-    board[cell] = 0;
-    false
+    let mut solver = Solver::new(board);
+    solver.solve().then_some(solver.board)
 }
 
 /// Build a random complete grid with shuffled DFS.
 pub fn full_solution<R: Rng>(rng: &mut R) -> Board {
-    let mut board = [0u8; CELLS];
-    fill_random(&mut board, rng);
-    board
-}
-
-fn fill_random<R: Rng>(board: &mut Board, rng: &mut R) -> bool {
-    let (cell, mask) = match find_mrv_cell(board) {
-        None => return true,
-        Some((_, 0)) => return false,
-        Some(cm) => cm,
-    };
-    let mut cands = [0u8; N];
-    let mut n = 0;
-    for v in (1..=9u8).filter(|v| mask & (1 << v) != 0) {
-        cands[n] = v;
-        n += 1;
-    }
-    let cands = &mut cands[..n];
-    cands.shuffle(rng);
-    for &v in cands.iter() {
-        board[cell] = v;
-        if fill_random(board, rng) {
-            return true;
-        }
-    }
-    board[cell] = 0;
-    false
+    let mut solver = Solver::new(&[0; CELLS]);
+    solver.fill_random(rng);
+    solver.board
 }
 
 /// Blank cells of `solved` in random order while the puzzle keeps a unique
@@ -341,8 +408,7 @@ mod tests {
         let mut bad = solved;
         bad[idx(8, 8)] = 0; // needs 9 ...
         bad[idx(0, 8)] = 9; // ... but 9 is now used in column 8
-        let mut probe = bad;
-        assert_eq!(count_solutions(&mut probe, 2), 0);
+        assert_eq!(count_solutions(&bad, 2), 0);
         assert_eq!(solve_one(&bad), None);
     }
 }
