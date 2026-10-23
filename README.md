@@ -24,10 +24,9 @@ hardest one the puzzle needs:
 
 | Level  | Hardest technique needed                          | Clues  |
 | ------ | ------------------------------------------------- | ------ |
-| Easy   | singles                                           | 45     |
-| Medium | singles                                           | ~31    |
-| Hard   | locked candidates, naked/hidden pairs & triples   | ~22-27 |
-| Expert | X-Wing, XY-Wing (rarely a naked/hidden quad)      | ~22-27 |
+| Easy   | singles                                           | ~31    |
+| Medium | locked candidates, naked/hidden pairs & triples   | ~22-27 |
+| Hard   | X-Wing, XY-Wing (rarely a naked/hidden quad)      | ~22-27 |
 | Zen    | Swordfish, XYZ-Wing, Jellyfish                    | ~22-27 |
 
 Every puzzle has exactly one solution (cells are removed from a random
@@ -69,7 +68,7 @@ Delete that folder to start over.
 | q                              | quit (your game is saved)                 |
 | Esc                            | close popup / view the finished board     |
 
-On the title screen: `c` or `Enter` continues a saved game; `1-5`,
+On the title screen: `c` or `Enter` continues a saved game; `1-4`,
 arrows/hjkl + `Enter`, or a click starts a level. Hints name the technique
 that finds the cell ("Hint: X-Wing, then a single"), so they teach as well
 as help.
@@ -82,7 +81,7 @@ Clicking outside a popup closes it, just like Esc.
 
 ## Features
 
-- 5 difficulty levels graded by solving technique, all pure logic
+- 4 difficulty levels graded by solving technique, all pure logic
 - Pencil marks, undo, hints that name their technique, erase
 - Mistake highlighting, remaining-digit counters, progress bar, timer
 - Autosave and resume, hint-free best times per level

@@ -15,22 +15,20 @@ use serde::{Deserialize, Serialize};
 use crate::logic::{self, Grade, Technique};
 use crate::sudoku::{self, Board, CELLS};
 
-/// Five difficulty levels, ordered easy -> zen.
+/// Four difficulty levels, ordered easy -> zen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Difficulty {
     Easy,
     Medium,
     Hard,
-    Expert,
     Zen,
 }
 
 impl Difficulty {
-    pub const ALL: [Difficulty; 5] = [
+    pub const ALL: [Difficulty; 4] = [
         Difficulty::Easy,
         Difficulty::Medium,
         Difficulty::Hard,
-        Difficulty::Expert,
         Difficulty::Zen,
     ];
 
@@ -39,17 +37,15 @@ impl Difficulty {
             Difficulty::Easy => "Easy",
             Difficulty::Medium => "Medium",
             Difficulty::Hard => "Hard",
-            Difficulty::Expert => "Expert",
             Difficulty::Zen => "Zen",
         }
     }
 
     pub fn blurb(self) -> &'static str {
         match self {
-            Difficulty::Easy => "Warm-up: singles, lots of clues",
-            Difficulty::Medium => "Fewer clues, still just singles",
-            Difficulty::Hard => "Needs notes: pointing & pairs",
-            Difficulty::Expert => "Fish & wings: X-Wing, XY-Wing",
+            Difficulty::Easy => "Warm-up: just singles",
+            Difficulty::Medium => "Needs notes: pointing & pairs",
+            Difficulty::Hard => "Fish & wings: X-Wing, XY-Wing",
             Difficulty::Zen => "Barely there: Swordfish & XYZ",
         }
     }
@@ -62,9 +58,9 @@ impl Difficulty {
     pub fn techniques(self) -> RangeInclusive<Technique> {
         use Technique::*;
         match self {
-            Difficulty::Easy | Difficulty::Medium => NakedSingle..=HiddenSingle,
-            Difficulty::Hard => LockedCandidates..=HiddenTriple,
-            Difficulty::Expert => XWing..=HiddenQuad,
+            Difficulty::Easy => NakedSingle..=HiddenSingle,
+            Difficulty::Medium => LockedCandidates..=HiddenTriple,
+            Difficulty::Hard => XWing..=HiddenQuad,
             Difficulty::Zen => Swordfish..=Jellyfish,
         }
     }
@@ -73,8 +69,7 @@ impl Difficulty {
     /// can go, which leaves ~22-27 clues.
     fn holes(self) -> usize {
         match self {
-            Difficulty::Easy => 36,
-            Difficulty::Medium => 50,
+            Difficulty::Easy => 50,
             _ => CELLS,
         }
     }
@@ -157,11 +152,7 @@ mod tests {
 
     #[test]
     fn levels_cover_every_technique_once_and_in_order() {
-        // Easy and Medium share singles and differ by clue count.
-        let bands: Vec<_> = Difficulty::ALL[1..]
-            .iter()
-            .map(|d| d.techniques())
-            .collect();
+        let bands: Vec<_> = Difficulty::ALL.iter().map(|d| d.techniques()).collect();
         for pair in bands.windows(2) {
             assert!(pair[0].end() < pair[1].start(), "{pair:?}");
         }
@@ -185,14 +176,15 @@ mod tests {
     #[test]
     fn easier_levels_keep_more_clues() {
         let mut rng = StdRng::seed_from_u64(6);
-        assert_eq!(deal(Difficulty::Easy, &mut rng).givens(), 45);
-        assert!(deal(Difficulty::Medium, &mut rng).givens() <= 31);
+        let easy = deal(Difficulty::Easy, &mut rng).givens();
+        assert!(easy <= 31);
+        assert!(deal(Difficulty::Medium, &mut rng).givens() < easy);
     }
 
     #[test]
     fn fast_dealing_matches_the_level() {
-        let d = deal_fast(Difficulty::Hard);
-        assert!(Difficulty::Hard.techniques().contains(&d.grade.hardest));
+        let d = deal_fast(Difficulty::Medium);
+        assert!(Difficulty::Medium.techniques().contains(&d.grade.hardest));
         assert!(sudoku::is_unique(&d.puzzle));
     }
 }

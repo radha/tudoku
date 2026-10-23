@@ -106,7 +106,7 @@ impl App {
     /// Start on the title screen, offering any saved game from `store`.
     pub fn new(store: Store) -> Self {
         let resume = store.load_game();
-        let last_level = resume.as_ref().map_or(Difficulty::Medium, |g| g.difficulty);
+        let last_level = resume.as_ref().map_or(Difficulty::Easy, |g| g.difficulty);
         let mut app = Self {
             game: None,
             overlays: Vec::new(),
@@ -627,12 +627,12 @@ mod tests {
     fn number_keys_and_enter_start_levels() {
         let mut app = App::new(Store::none());
         key(&mut app, KeyCode::Char('4'));
-        assert_eq!(app.dealing, Some(Difficulty::Expert));
+        assert_eq!(app.dealing, Some(Difficulty::Zen));
 
         let mut app = App::new(Store::none());
-        key(&mut app, KeyCode::Up);
+        key(&mut app, KeyCode::Down);
         key(&mut app, KeyCode::Enter);
-        assert_eq!(app.dealing, Some(Difficulty::Easy));
+        assert_eq!(app.dealing, Some(Difficulty::Medium));
     }
 
     #[test]
@@ -683,11 +683,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut app = app_on_disk(&dir);
         let (p, s) = test_board();
-        app.start_game(Game::new(Difficulty::Expert, p, s));
+        app.start_game(Game::new(Difficulty::Hard, p, s));
 
         let mut app = app_on_disk(&dir);
         key(&mut app, KeyCode::Char('c'));
-        assert_eq!(app.game.as_ref().unwrap().difficulty, Difficulty::Expert);
+        assert_eq!(app.game.as_ref().unwrap().difficulty, Difficulty::Hard);
 
         let mut app = app_on_disk(&dir);
         key(&mut app, KeyCode::Down);
