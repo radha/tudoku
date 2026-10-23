@@ -129,20 +129,20 @@ impl Grid {
                         };
                         let numbers = |m: u16| listing(bits(m).map(|l| (l + 1).to_string()), "and");
                         let sashimi = bits(set).any(|l| (lines[l] & cover).count_ones() < 2);
-                        let (plural, not, one) = if fins.len() == 1 {
-                            ("", "isn't", "it is")
+                        let (plural, not, one, s_verb) = if fins.len() == 1 {
+                            ("", "isn't", "it is", "s")
                         } else {
-                            ("s", "aren't", "one of them is")
+                            ("s", "aren't", "one of them is", "")
                         };
-                        let kind = if sashimi { "a sashimi fish: " } else { "" };
+                        let kind = if sashimi { " (a sashimi fish)" } else { "" };
                         let boxn = fin_box + 1;
                         let why = format!(
-                            "This is {kind}{bases} {} and {covers_name} {} with the fin{plural} {} \
-                             sticking out in box {boxn}. If the fin{plural} {not} {digit}, every \
-                             {digit} in those {bases} is in those {covers_name}, so they can't be \
-                             {digit} elsewhere in them; if {one}, it's the {digit} of box \
-                             {boxn}. Either way, the other {digit}s of those {covers_name} in \
-                             box {boxn} are out.",
+                            "Look at {bases} {} and {covers_name} {}{kind}. The fin{plural} {} \
+                             stick{s_verb} out in box {boxn}. If the fin{plural} {not} {digit}, every \
+                             {digit} in those {bases} is in those {covers_name}, so those \
+                             {covers_name} have no room for a {digit} outside those {bases}; if \
+                             {one}, box {boxn} has its {digit} there. Either way, the other {digit}s \
+                             of those {covers_name} in box {boxn} are out.",
                             numbers(set),
                             numbers(cover),
                             cell_list(&fins),
