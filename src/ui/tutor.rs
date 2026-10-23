@@ -192,22 +192,24 @@ fn effect_lines(lines: &mut Vec<Line<'static>>, step: &Step) {
             format!("{} is {digit}", rc(*cell)),
             Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
         )),
-        Effect::Eliminate(removals) => match step.pattern.digit {
-            Some(digit) => {
+        Effect::Eliminate(removals) => {
+            // The same one digit out of every cell reads as a list of
+            // cells, whatever digits the pattern itself is built on.
+            let first = removals.first().map_or(0, |&(_, mask)| mask);
+            if first.is_power_of_two() && removals.iter().all(|&(_, mask)| mask == first) {
                 lines.push(Line::styled(
-                    format!("Not {digit}:"),
+                    format!("Not {}:", first.trailing_zeros()),
                     Style::default().fg(RED).add_modifier(Modifier::BOLD),
                 ));
                 let cells: Vec<String> = removals.iter().map(|&(cell, _)| rc(cell)).collect();
                 para(lines, &cells.join(", "), ink);
-            }
-            None => {
+            } else {
                 for &(cell, mask) in removals {
                     let text = format!("{}: not {}", rc(cell), digit_list(mask));
                     para(lines, &text, ink);
                 }
             }
-        },
+        }
     }
 }
 

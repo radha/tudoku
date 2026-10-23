@@ -1013,9 +1013,9 @@ pub fn render(frame: &mut Frame, app: &App) -> Vec<Hit> {
 mod tests {
     use super::*;
     use crate::app::{Tutor, TutorStage};
-    use crate::logic::{Effect, Pattern, Step, Technique, rc};
+    use crate::logic::{Effect, Grid, Pattern, Step, Technique, rc};
     use crate::store::Store;
-    use crate::sudoku::{CELLS, candidates_mask, test_board};
+    use crate::sudoku::{CELLS, candidates_mask, parse_board, test_board};
     use crate::tutor::{Advice, NoteMode};
     use ratatui::{Terminal, backend::TestBackend};
 
@@ -1592,5 +1592,47 @@ mod tests {
         assert!(pane.contains("Because. Not 4: r1c3, r1c4"), "{pane}");
         let pane = shown(None, vec![(2, 0b110), (3, 1 << 9)]);
         assert!(pane.contains("r1c3: not 1 and 2 r1c4: not 9"), "{pane}");
+    }
+
+    #[test]
+    fn one_digit_out_of_every_cell_reads_as_not_d() {
+        let shown = |step: Step| {
+            let mut app = app_with_game();
+            app.tutor = Some(Tutor {
+                mode: NoteMode::Full,
+                advice: Advice::Step(step),
+                stage: TutorStage::ShowMe,
+            });
+            pane_text(&draw(&app, W, 50).0)
+        };
+        // A pattern on several digits can still take out just one.
+        let pane = shown(Step {
+            technique: Technique::NakedPair,
+            effect: Effect::Eliminate(vec![(2, 1 << 7), (3, 1 << 7)]),
+            pattern: Pattern::default(),
+            why: "Because.".to_string(),
+        });
+        assert!(pane.contains("Not 7: r1c3, r1c4"), "{pane}");
+        // A real XY-Wing, whose pattern names no digit.
+        let p = parse_board(
+            "800000046007000020920004005000010800035740000080090004000000060600500000200006013",
+        )
+        .unwrap();
+        let mut grid = Grid::new(&p);
+        let step = loop {
+            let step = grid.next_step().expect("the puzzle needs an XY-Wing");
+            if step.technique == Technique::XYWing {
+                break step;
+            }
+            grid.apply(&step);
+        };
+        assert_eq!(step.pattern.digit, None);
+        let Effect::Eliminate(removals) = &step.effect else {
+            panic!("an XY-Wing eliminates")
+        };
+        let z = removals[0].1.trailing_zeros();
+        let pane = shown(step);
+        assert!(pane.contains(&format!("Not {z}:")), "{pane}");
+        assert!(!pane.contains(": not"), "{pane}");
     }
 }
