@@ -285,7 +285,7 @@ fn bits(mut mask: u16) -> impl Iterator<Item = usize> {
 }
 
 fn sees(a: usize, b: usize) -> bool {
-    a != b && (row_of(a) == row_of(b) || col_of(a) == col_of(b) || box_of_cell(a) == box_of_cell(b))
+    SEEN[a] >> b & 1 != 0
 }
 
 /// A set of cells, one bit each.
@@ -618,6 +618,15 @@ mod tests {
             [0b0011, 0b1001, 0b1010]
         );
         assert_eq!(bits(0b1010_0001).collect::<Vec<_>>(), [0, 5, 7]);
+    }
+
+    #[test]
+    fn cells_see_exactly_their_peers() {
+        for a in 0..CELLS {
+            for b in 0..CELLS {
+                assert_eq!(sees(a, b), sudoku::peers(a).any(|p| p == b), "{a} {b}");
+            }
+        }
     }
 
     #[test]

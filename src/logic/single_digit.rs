@@ -2,7 +2,8 @@
 //! Skyscraper, 2-String Kite, Crane and Empty Rectangle.
 
 use super::{
-    Grid, Link, LinkKind, Pattern, Role, Step, Technique, cell_list, house_name, rc, sees,
+    Cells, Grid, Link, LinkKind, Pattern, Role, SEEN, Step, Technique, cell_list, cells_in,
+    house_name, rc, sees,
 };
 use crate::sudoku::{CELLS, HOUSES, N, box_of_cell, col_of, idx, row_of};
 
@@ -68,6 +69,9 @@ impl Grid {
     ) -> Option<Step> {
         for digit in 1..=9u8 {
             let bit = 1u16 << digit;
+            let spots: Cells = (0..CELLS)
+                .filter(|&c| self.cands[c] & bit != 0)
+                .fold(0, |s, c| s | 1 << c);
             let pairs: Vec<(usize, [usize; 2])> = (0..HOUSES.len())
                 .filter_map(|h| self.conjugates(h, digit).map(|(a, b)| (h, [a, b])))
                 .collect();
@@ -85,17 +89,12 @@ impl Grid {
                             let Some((houses, shared)) = join(h1, h2, a, b) else {
                                 continue;
                             };
-                            let targets: Vec<usize> = (0..CELLS)
-                                .filter(|&c| {
-                                    self.cands[c] & bit != 0
-                                        && !four.contains(&c)
-                                        && sees(c, a1)
-                                        && sees(c, b2)
-                                })
-                                .collect();
-                            if targets.is_empty() {
+                            let pattern_cells = four.iter().fold(0 as Cells, |s, &c| s | 1 << c);
+                            let seeing = SEEN[a1] & SEEN[b2] & spots & !pattern_cells;
+                            if seeing == 0 {
                                 continue;
                             }
+                            let targets: Vec<usize> = cells_in(seeing).collect();
                             let why = format!(
                                 "In {}, {digit} is {} or {}; in {}, it is {} or {}. \
                                  {} and {} share {}, so they can't both be {digit}. \
