@@ -83,10 +83,10 @@ fn para(lines: &mut Vec<Line<'static>>, text: &str, style: Style) {
 /// Wrapped `lines` in `style`, at most `room` of them: when some have to
 /// go, the last one kept ends in "…".
 fn cut(mut lines: Vec<String>, room: usize, style: Style) -> Vec<Line<'static>> {
-    let cut = lines.len() > room;
+    let dropping = lines.len() > room;
     lines.truncate(room);
     let last = lines.pop().map(|mut last| {
-        if !cut {
+        if !dropping {
             return Line::styled(last, style);
         }
         // Make room for the "…", a word at a time.
@@ -945,8 +945,8 @@ mod tests {
             game.notes = notes;
             game
         };
-        // The worked examples hold the longest reasons, and fit whole when
-        // your notes are filled in.
+        // Every worked example, in both note modes. With your notes filled
+        // in, their reasons fit whole too.
         for &t in Technique::ALL {
             let ex = example(t).unwrap();
             let solution = solve_one(&ex.values).unwrap();
