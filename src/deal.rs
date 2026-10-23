@@ -153,7 +153,10 @@ pub fn deal<R: Rng>(level: Difficulty, rng: &mut R) -> Deal {
 }
 
 /// [`deal`] on every core at once; the first worker to succeed wins. The
-/// rarest level (Master) needs ~11 attempts of ~3.5ms each on average.
+/// rarest level (Master) needs ~10 attempts of ~0.8ms each on average.
+/// The others finish their attempts before this returns, a millisecond
+/// or two, so a worker that panics takes the deal down with it, where the
+/// caller sees it, rather than printing over the game later.
 pub fn deal_fast(level: Difficulty) -> Deal {
     let workers = std::thread::available_parallelism().map_or(1, NonZero::get);
     let done = AtomicBool::new(false);
