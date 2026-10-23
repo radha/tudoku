@@ -232,9 +232,10 @@ fn event_loop(
     Ok(())
 }
 
-/// Deal one puzzle per level with a fixed seed and check each one, proving
-/// the generator works without any I/O or network. Reports what each
-/// puzzle actually is, not what the level promises.
+/// Deal five puzzles per level, unseeded and on every core as the game
+/// does (`deal_fast`), and check each one, proving the generator works
+/// without any I/O or network. Reports what the last puzzle per level
+/// actually is, not what the level promises, and the median deal time.
 fn offline_check() {
     const DEALS: usize = 5;
     for level in Difficulty::ALL {
