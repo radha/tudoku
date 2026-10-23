@@ -37,7 +37,10 @@ pub enum Technique {
     XYWing,
     Swordfish,
     XYZWing,
+    FinnedXWing,
     Jellyfish,
+    FinnedSwordfish,
+    FinnedJellyfish,
 }
 
 impl Technique {
@@ -61,7 +64,10 @@ impl Technique {
         Technique::XYWing,
         Technique::Swordfish,
         Technique::XYZWing,
+        Technique::FinnedXWing,
         Technique::Jellyfish,
+        Technique::FinnedSwordfish,
+        Technique::FinnedJellyfish,
     ];
 
     pub fn name(self) -> &'static str {
@@ -85,7 +91,10 @@ impl Technique {
             Technique::XYWing => "XY-Wing",
             Technique::Swordfish => "Swordfish",
             Technique::XYZWing => "XYZ-Wing",
+            Technique::FinnedXWing => "finned X-Wing",
             Technique::Jellyfish => "Jellyfish",
+            Technique::FinnedSwordfish => "finned Swordfish",
+            Technique::FinnedJellyfish => "finned Jellyfish",
         }
     }
 
@@ -309,7 +318,10 @@ impl Grid {
             XYWing => self.xy_wing(),
             Swordfish => self.fish(3, t),
             XYZWing => self.xyz_wing(),
+            FinnedXWing => self.finned_fish(2, t),
             Jellyfish => self.fish(4, t),
+            FinnedSwordfish => self.finned_fish(3, t),
+            FinnedJellyfish => self.finned_fish(4, t),
         }
     }
 
@@ -481,7 +493,7 @@ mod tests {
         for (i, &t) in Technique::ALL.iter().enumerate() {
             assert_eq!(t as usize, i, "{t:?}");
         }
-        assert_eq!(*Technique::ALL.last().unwrap(), Technique::Jellyfish);
+        assert_eq!(*Technique::ALL.last().unwrap(), Technique::FinnedJellyfish);
     }
 
     #[test]
@@ -624,7 +636,21 @@ mod tests {
         });
         // The run reaches well past the singles.
         use Technique::*;
-        for t in [Pointing, Claiming, HiddenQuad, XWing, XYZWing, Jellyfish] {
+        for t in [
+            Pointing,
+            Claiming,
+            HiddenQuad,
+            XWing,
+            Skyscraper,
+            TwoStringKite,
+            Crane,
+            EmptyRectangle,
+            XYZWing,
+            FinnedXWing,
+            Jellyfish,
+            FinnedSwordfish,
+            FinnedJellyfish,
+        ] {
             assert!(found[t as usize] > 0, "{t:?} never fired: {found:?}");
         }
     }

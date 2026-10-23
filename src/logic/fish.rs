@@ -1,7 +1,7 @@
-//! Fish: X-Wing, Swordfish and Jellyfish.
+//! Fish: X-Wing, Swordfish and Jellyfish, and their finned and sashimi kin.
 
-use super::{Grid, Pattern, Role, Step, Technique, bits, listing, subsets};
-use crate::sudoku::{HOUSES, N, idx};
+use super::{Grid, Pattern, Role, Step, Technique, bits, cell_list, listing, subsets};
+use crate::sudoku::{HOUSES, N, box_of_cell, idx};
 
 impl Grid {
     /// X-Wing (k=2), Swordfish (3), Jellyfish (4): a digit whose spots in
@@ -64,12 +64,104 @@ impl Grid {
         }
         None
     }
+
+    /// Finned fish: `k` base lines and `k` cover lines like a plain fish,
+    /// except a few of the base lines' spots (the fins) stick out past the
+    /// cover lines, all inside one box. If no fin holds the digit it is a
+    /// plain fish; if one does, it holds the digit in that box. Either way
+    /// the cover lines' spots in that box, off the base lines, are out.
+    /// Sashimi is the case where a base line has fewer than two spots in
+    /// the cover lines, so it leans on its fin.
+    pub(super) fn finned_fish(&self, k: u32, technique: Technique) -> Option<Step> {
+        let covers: Vec<u16> = subsets((1 << N) - 1, k).collect();
+        for digit in 1..=9u8 {
+            let bit = 1 << digit;
+            for base in [0, N] {
+                let lines: [u16; N] =
+                    std::array::from_fn(|l| self.positions(&HOUSES[base + l], bit));
+                let eligible = (0..N)
+                    .filter(|&l| lines[l] != 0)
+                    .fold(0u16, |m, l| m | 1 << l);
+                let at = move |l: usize, c: usize| if base == 0 { idx(l, c) } else { idx(c, l) };
+                for set in subsets(eligible, k) {
+                    let union = bits(set).fold(0, |m, l| m | lines[l]);
+                    for &cover in &covers {
+                        // Every cover line holds a base spot.
+                        if cover & !union != 0 {
+                            continue;
+                        }
+                        let fins: Vec<usize> = bits(set)
+                            .flat_map(|l| bits(lines[l] & !cover).map(move |c| at(l, c)))
+                            .collect();
+                        let Some(&first) = fins.first() else { continue };
+                        let fin_box = box_of_cell(first);
+                        if fins.iter().any(|&f| box_of_cell(f) != fin_box) {
+                            continue;
+                        }
+                        let removals = bits(cover)
+                            .flat_map(|c| {
+                                (0..N)
+                                    .filter(move |&l| set & 1 << l == 0)
+                                    .map(move |l| at(l, c))
+                            })
+                            .filter(|&cell| box_of_cell(cell) == fin_box)
+                            .map(|cell| (cell, bit))
+                            .collect();
+                        let spots =
+                            bits(set).flat_map(|l| bits(lines[l] & cover).map(move |c| at(l, c)));
+                        let cover_houses = N - base;
+                        let mut marks = self.marks(spots, bit, Role::Key);
+                        marks.extend(self.marks(fins.iter().copied(), bit, Role::Other));
+                        let pattern = Pattern {
+                            digit: Some(digit),
+                            houses: bits(set)
+                                .map(|l| base + l)
+                                .chain(bits(cover).map(|c| cover_houses + c))
+                                .chain([2 * N + fin_box])
+                                .collect(),
+                            marks,
+                            ..Pattern::default()
+                        };
+                        let (bases, covers_name) = if base == 0 {
+                            ("rows", "columns")
+                        } else {
+                            ("columns", "rows")
+                        };
+                        let numbers = |m: u16| listing(bits(m).map(|l| (l + 1).to_string()), "and");
+                        let sashimi = bits(set).any(|l| (lines[l] & cover).count_ones() < 2);
+                        let (plural, not, one) = if fins.len() == 1 {
+                            ("", "isn't", "it is")
+                        } else {
+                            ("s", "aren't", "one of them is")
+                        };
+                        let kind = if sashimi { "a sashimi fish: " } else { "" };
+                        let boxn = fin_box + 1;
+                        let why = format!(
+                            "This is {kind}{bases} {} and {covers_name} {} with the fin{plural} {} \
+                             sticking out in box {boxn}. If the fin{plural} {not} {digit}, every \
+                             {digit} in those {bases} is in those {covers_name}, so they can't be \
+                             {digit} elsewhere in them; if {one}, it's the {digit} of box \
+                             {boxn}. Either way, the other {digit}s of those {covers_name} in \
+                             box {boxn} are out.",
+                            numbers(set),
+                            numbers(cover),
+                            cell_list(&fins),
+                        );
+                        if let Some(step) = self.eliminating(technique, removals, pattern, why) {
+                            return Some(step);
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::logic::Technique;
     use crate::logic::testing::{removals, staged};
+    use crate::logic::{Role, Technique};
     use crate::sudoku::{N, idx};
 
     #[test]
@@ -110,5 +202,54 @@ mod tests {
         assert_eq!(grid.fish(2, Technique::XWing), None);
         let got = removals(grid.fish(3, Technique::Swordfish));
         assert_eq!(got, [(idx(2, 6), 1 << 4)]);
+    }
+
+    #[test]
+    fn finned_x_wing_clears_inside_the_fin_box() {
+        // 3 sits in columns 1 and 7 of rows 1 and 6, plus a fin at r7c9
+        // in box 9: the fin's box loses the 3 below column 8.
+        let grid = staged(&[
+            (idx(1, 1), &[3, 4]),
+            (idx(1, 7), &[3, 5]),
+            (idx(6, 1), &[3, 6]),
+            (idx(6, 7), &[3, 8]),
+            (idx(6, 8), &[3, 9]),
+            (idx(7, 7), &[3, 2]),
+        ]);
+        assert_eq!(grid.fish(2, Technique::XWing), None);
+        let step = grid.finned_fish(2, Technique::FinnedXWing);
+        let found = step.as_ref().unwrap();
+        assert_eq!(found.pattern.digit, Some(3));
+        assert_eq!(found.pattern.houses, [1, 6, N + 1, N + 7, 2 * N + 8]);
+        let fins: Vec<usize> = found
+            .pattern
+            .marks
+            .iter()
+            .filter(|m| m.role == Role::Other)
+            .map(|m| m.cell)
+            .collect();
+        assert_eq!(fins, [idx(6, 8)]);
+        assert!(!found.why.contains("sashimi"));
+        assert_eq!(removals(step), [(idx(7, 7), 1 << 3)]);
+    }
+
+    #[test]
+    fn sashimi_swordfish_says_sashimi() {
+        // 5 in rows 1, 4 and 7 over columns 1, 4 and 7. Row 4 has only
+        // one spot in them, plus a fin at r4c5 in box 5.
+        let grid = staged(&[
+            (idx(0, 0), &[5, 1]),
+            (idx(0, 3), &[5, 2]),
+            (idx(0, 6), &[5, 9]),
+            (idx(3, 3), &[5, 3]),
+            (idx(3, 4), &[5, 4]),
+            (idx(6, 0), &[5, 6]),
+            (idx(6, 6), &[5, 7]),
+            (idx(4, 3), &[5, 8]),
+        ]);
+        assert_eq!(grid.finned_fish(2, Technique::FinnedXWing), None);
+        let step = grid.finned_fish(3, Technique::FinnedSwordfish);
+        assert!(step.as_ref().unwrap().why.contains("sashimi"));
+        assert_eq!(removals(step), [(idx(4, 3), 1 << 5)]);
     }
 }

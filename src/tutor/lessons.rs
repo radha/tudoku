@@ -191,6 +191,33 @@ pub fn lesson(t: Technique) -> Lesson {
             ],
             roles: ("where it fits", ""),
         },
+        FinnedXWing => Lesson {
+            steps: &[
+                "Pick two rows (or columns) where a digit fits, and two columns (or rows) holding most of its cells.",
+                "The cells outside those columns are fins. All fins must share one box.",
+                "Either a fin is the digit, or it is a plain fish. A line with under two cells there is sashimi.",
+                "Either way, a cell in the fin box can't be the digit if it is in those columns (or rows) but not in the first rows (or columns).",
+            ],
+            roles: ("fish cells", "fins"),
+        },
+        FinnedSwordfish => Lesson {
+            steps: &[
+                "Pick three rows (or columns) where a digit fits, and three columns (or rows) holding most of its cells.",
+                "The cells outside those columns are fins. All fins must share one box.",
+                "Either a fin is the digit, or it is a plain fish. A line with under two cells there is sashimi.",
+                "Either way, a cell in the fin box can't be the digit if it is in those columns (or rows) but not in the first rows (or columns).",
+            ],
+            roles: ("fish cells", "fins"),
+        },
+        FinnedJellyfish => Lesson {
+            steps: &[
+                "Pick four rows (or columns) where a digit fits, and four columns (or rows) holding most of its cells.",
+                "The cells outside those columns are fins. All fins must share one box.",
+                "Either a fin is the digit, or it is a plain fish. A line with under two cells there is sashimi.",
+                "Either way, a cell in the fin box can't be the digit if it is in those columns (or rows) but not in the first rows (or columns).",
+            ],
+            roles: ("fish cells", "fins"),
+        },
     }
 }
 
