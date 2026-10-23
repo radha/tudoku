@@ -261,7 +261,16 @@ fn listing(items: impl IntoIterator<Item = String>, last: &str) -> String {
 
 /// Every `k`-element subset of the set bits in `universe`, as bitmasks.
 fn subsets(universe: u16, k: u32) -> impl Iterator<Item = u16> {
-    (0..=universe).filter(move |&s| s & !universe == 0 && s.count_ones() == k)
+    // Step from one subset of `universe` to the next larger one, so only
+    // its subsets are visited rather than every number up to it.
+    let mut next = Some(0u16);
+    std::iter::from_fn(move || {
+        let s = next?;
+        let after = (s | !universe).wrapping_add(1) & universe;
+        next = (after != 0).then_some(after);
+        Some(s)
+    })
+    .filter(move |s| s.count_ones() == k)
 }
 
 /// The indices of the set bits in `mask`, lowest first.
@@ -609,6 +618,22 @@ mod tests {
             [0b0011, 0b1001, 0b1010]
         );
         assert_eq!(bits(0b1010_0001).collect::<Vec<_>>(), [0, 5, 7]);
+    }
+
+    #[test]
+    fn subsets_are_every_k_subset_smallest_first() {
+        for universe in 0..=ALL_DIGITS {
+            for k in 0..=4 {
+                let every: Vec<u16> = (0..=universe)
+                    .filter(|&s| s & !universe == 0 && s.count_ones() == k)
+                    .collect();
+                assert_eq!(
+                    subsets(universe, k).collect::<Vec<_>>(),
+                    every,
+                    "{universe:#b}"
+                );
+            }
+        }
     }
 
     #[test]
