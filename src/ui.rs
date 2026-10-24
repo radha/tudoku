@@ -524,6 +524,15 @@ fn popup(frame: &mut Frame, area: Rect, w: u16, h: u16, title: &str) -> (Rect, R
 /// Text width of one level-menu row.
 const MENU_TEXT_W: usize = 60;
 
+/// What the title menu's Library row says it is.
+const LIBRARY_BLURB: &str = "Every strategy, with a worked example";
+
+/// A level menu's height: its rows, the hint and footer around them, and
+/// the rule over the Library row if it has one.
+fn menu_height(rows: &[MenuRow]) -> u16 {
+    rows.len() as u16 + 6 + u16::from(rows.contains(&MenuRow::Library))
+}
+
 /// A menu of levels (and, on the title screen, "Continue"), with best
 /// times. Returns the popup's frame; each row registers its own click.
 fn draw_levels_menu(
@@ -540,11 +549,21 @@ fn draw_levels_menu(
     } else {
         "New game — pick difficulty"
     };
-    let h = rows.len() as u16 + 6;
-    let (r, inner) = popup(frame, area, MENU_TEXT_W as u16 + 4, h, title);
+    let (r, inner) = popup(
+        frame,
+        area,
+        MENU_TEXT_W as u16 + 4,
+        menu_height(rows),
+        title,
+    );
+    let last_key = if rows.contains(&MenuRow::Library) {
+        6
+    } else {
+        5
+    };
     let mut lines: Vec<Line> = vec![
         Line::styled(
-            " arrows/hjkl + Enter, keys 1-5, or click",
+            format!(" arrows/hjkl + Enter, keys 1-{last_key}, or click"),
             Style::default().fg(MUTED),
         ),
         Line::from(""),
@@ -573,6 +592,15 @@ fn draw_levels_menu(
                 );
                 (text, Action::StartLevel(d))
             }
+            MenuRow::Library => {
+                // Set apart from the levels: it deals no puzzle.
+                lines.push(Line::styled(
+                    format!(" {}", "─".repeat(MENU_TEXT_W - 2)),
+                    Style::default().fg(LINE),
+                ));
+                let text = format!(" {marker} 6. Library {LIBRARY_BLURB}");
+                (text, Action::OpenLibrary)
+            }
         };
         lines.push(Line::styled(
             format!("{text:<MENU_TEXT_W$}"),
@@ -581,8 +609,8 @@ fn draw_levels_menu(
                 .bg(if sel { SEL_BG } else { POPUP_BG })
                 .add_modifier(Modifier::BOLD),
         ));
-        let hit = Rect::new(r.x + 1, inner.y + 2 + i as u16, r.width - 2, 1);
-        push_hit(hits, hit, Some(action));
+        let y = inner.y + lines.len() as u16 - 1;
+        push_hit(hits, Rect::new(r.x + 1, y, r.width - 2, 1), Some(action));
     }
     lines.push(Line::from(""));
     lines.push(Line::styled(footer.to_string(), Style::default().fg(MUTED)));
@@ -800,7 +828,7 @@ fn draw_title(frame: &mut Frame, area: Rect, app: &App, hits: &mut Vec<Hit>) {
         Line::from(""),
         Line::styled(prompt, Style::default().fg(INK)),
     ];
-    let menu = centered_rect(area, MENU_TEXT_W as u16 + 4, rows.len() as u16 + 6);
+    let menu = centered_rect(area, MENU_TEXT_W as u16 + 4, menu_height(&rows));
     let tr = Rect::new(area.x, menu.y.saturating_sub(6), area.width, 5);
     frame.render_widget(Paragraph::new(title).alignment(Alignment::Center), tr);
     // Under a popup (help) the menu would only peek out around it.

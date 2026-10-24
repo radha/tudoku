@@ -1,6 +1,7 @@
 //! What's on screen, and how input changes it.
 //!
-//! The base screen is either the title menu (no game yet) or the board.
+//! The base screen is the title menu (no game yet), the techniques
+//! library in its place, or the board.
 //! Popups live on a stack of [`Overlay`]s: the top one receives every key
 //! and click, and `ui::render` draws them bottom to top. Input and drawing
 //! read the same stack, so they can never disagree about which popup is
@@ -19,7 +20,8 @@ use crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::deal::Difficulty;
 use crate::game::Game;
-use crate::logic::Effect;
+use crate::library::{self, Library};
+use crate::logic::{Effect, Technique};
 use crate::store::{Stats, Store};
 use crate::sudoku::{CELLS, col_of, row_of};
 use crate::tutor::{self, Advice, NoteMode, examples};
@@ -77,6 +79,16 @@ pub enum Action {
     CloseTutor,
     /// Step the worked example back (-1) or on (+1).
     ExampleStep(i8),
+    /// Show the library's map, from the title menu.
+    OpenLibrary,
+    /// Move the map's highlight `(rows, columns)`.
+    LibraryMove(i8, i8),
+    /// Show a technique's lesson.
+    LibraryOpen(Technique),
+    /// Go to the previous (-1) or next (+1) technique's lesson.
+    LibraryTurn(i8),
+    /// From a lesson to the map; from the map to the title menu.
+    LibraryBack,
 }
 
 /// How far the tutor has gone with its advice.
@@ -125,6 +137,7 @@ impl Tutor {
 pub enum MenuRow {
     Continue,
     Level(Difficulty),
+    Library,
 }
 
 pub struct App {
@@ -142,12 +155,37 @@ pub struct App {
     pub new_best: bool,
     /// The tutor's pane, while it is open.
     pub tutor: Option<Tutor>,
+    /// The techniques library, while it is on screen instead of the title
+    /// menu. Only reachable before a game starts.
+    pub library: Option<Library>,
     store: Store,
     last_saved: Instant,
     /// Whether the terminal window has focus, as far as we know.
     focused: bool,
     /// Saving has failed and the player has been told.
     storage_failing: bool,
+}
+
+/// Keys in the library: the map's arrows, or a lesson's steps and pages.
+fn library_key(library: Library, code: KeyCode) -> Option<Action> {
+    use KeyCode::{Char, Down, Enter, Esc, F, Left, Right, Up};
+    use Library::{Lesson, Map};
+
+    let action = match (library, code) {
+        (_, Esc) => Action::LibraryBack,
+        (_, Char('?') | F(1)) => Action::OpenHelp,
+        (Map { .. }, Up | Char('k')) => Action::LibraryMove(-1, 0),
+        (Map { .. }, Down | Char('j')) => Action::LibraryMove(1, 0),
+        (Map { .. }, Left | Char('h')) => Action::LibraryMove(0, -1),
+        (Map { .. }, Right | Char('l')) => Action::LibraryMove(0, 1),
+        (Map { at }, Enter | Char(' ')) => Action::LibraryOpen(at),
+        (Lesson { .. }, Left | Char('h')) => Action::ExampleStep(-1),
+        (Lesson { .. }, Right | Char('l')) => Action::ExampleStep(1),
+        (Lesson { .. }, Up | Char('k')) => Action::LibraryTurn(-1),
+        (Lesson { .. }, Down | Char('j')) => Action::LibraryTurn(1),
+        _ => return None,
+    };
+    Some(action)
 }
 
 /// The level bound to a number key on the level menus (`1` = Easy).
@@ -172,6 +210,7 @@ impl App {
             stats: store.load_stats().unwrap_or_default(),
             new_best: false,
             tutor: None,
+            library: None,
             store,
             last_saved: Instant::now(),
             focused: true,
@@ -183,13 +222,15 @@ impl App {
         app
     }
 
-    /// The title menu: "Continue" first when there's a saved game.
+    /// The title menu: "Continue" first when there's a saved game, the
+    /// library last.
     pub fn menu_rows(&self) -> Vec<MenuRow> {
         let levels = Difficulty::ALL.map(MenuRow::Level);
         self.resume
             .iter()
             .map(|_| MenuRow::Continue)
             .chain(levels)
+            .chain([MenuRow::Library])
             .collect()
     }
 
@@ -254,6 +295,9 @@ impl App {
         use KeyCode::{Backspace, Char, Delete, Down, Enter, Esc, F, Left, Right, Up};
 
         let Some(game) = &self.game else {
+            if let Some(library) = self.library {
+                return library_key(library, code);
+            }
             // Title menu.
             return match code {
                 Up | Char('k') => Some(Action::CursorUp),
@@ -261,6 +305,7 @@ impl App {
                 Enter | Char(' ') => Some(Action::Confirm),
                 Char('?') | F(1) => Some(Action::OpenHelp),
                 Char('c') if self.resume.is_some() => Some(Action::Continue),
+                Char('6') => Some(Action::OpenLibrary),
                 Char(c) => level_for_key(c),
                 _ => None,
             };
@@ -327,6 +372,11 @@ impl App {
             Action::TutorApply => self.apply_tutor(),
             Action::CloseTutor => self.tutor = None,
             Action::ExampleStep(delta) => self.step_example(delta),
+            Action::OpenLibrary
+            | Action::LibraryMove(..)
+            | Action::LibraryOpen(_)
+            | Action::LibraryTurn(_)
+            | Action::LibraryBack => self.browse(action),
         }
         false
     }
@@ -337,6 +387,7 @@ impl App {
             None if self.game.is_none() => match self.menu_rows()[self.menu_cursor] {
                 MenuRow::Continue => self.continue_saved(),
                 MenuRow::Level(level) => self.request_new_game(level),
+                MenuRow::Library => self.browse(Action::OpenLibrary),
             },
             _ => {}
         }
@@ -519,18 +570,50 @@ impl App {
         self.save();
     }
 
-    /// `←` / `→`: step the worked example back or on, within its stages.
+    /// `←` / `→`: step the worked example back or on, within its stages,
+    /// in the tutor or in a library lesson.
     fn step_example(&mut self, delta: i8) {
         if !self.overlays.is_empty() {
             return;
         }
-        if let Some(Tutor {
-            stage: TutorStage::Explain { stage },
-            ..
-        }) = &mut self.tutor
-        {
-            *stage = stage.saturating_add_signed(delta).min(EXAMPLE_STAGES - 1);
+        let stage = match (&mut self.tutor, &mut self.library) {
+            (
+                Some(Tutor {
+                    stage: TutorStage::Explain { stage },
+                    ..
+                }),
+                _,
+            ) => stage,
+            (None, Some(Library::Lesson { stage, .. })) => stage,
+            _ => return,
+        };
+        *stage = stage.saturating_add_signed(delta).min(EXAMPLE_STAGES - 1);
+    }
+
+    /// Find your way about the library: open it from the title menu, move
+    /// over the map, open a lesson, turn its pages, and back out. Each
+    /// lesson starts at the example's first stage.
+    fn browse(&mut self, action: Action) {
+        if !self.overlays.is_empty() || self.game.is_some() {
+            return;
         }
+        use Library::{Lesson, Map};
+        self.library = match (self.library, action) {
+            (None, Action::OpenLibrary) => Some(Map {
+                at: Technique::FullHouse,
+            }),
+            (Some(Map { at }), Action::LibraryMove(dr, dc)) => Some(Map {
+                at: library::map_move(at, dr, dc),
+            }),
+            (Some(Map { .. }), Action::LibraryOpen(at)) => Some(Lesson { at, stage: 0 }),
+            (Some(Lesson { at, .. }), Action::LibraryTurn(delta)) => Some(Lesson {
+                at: library::turn(at, delta),
+                stage: 0,
+            }),
+            (Some(Lesson { at, .. }), Action::LibraryBack) => Some(Map { at }),
+            (Some(Map { .. }), Action::LibraryBack) => None,
+            (library, _) => library,
+        };
     }
 
     /// `a`: do what the tutor advises, then put the tutor away.
@@ -593,6 +676,7 @@ impl App {
     pub fn start_game(&mut self, game: Game) {
         self.game = Some(game);
         self.tutor = None;
+        self.library = None;
         self.resume = None;
         self.dealing = None;
         self.new_best = false;
@@ -1397,5 +1481,135 @@ mod tests {
         assert_eq!(tutor_of(&app).advice, Advice::Stuck);
         key(&mut app, KeyCode::Char('a'));
         assert!(solved(&app, first));
+    }
+
+    fn title() -> App {
+        App::new(Store::none())
+    }
+
+    #[test]
+    fn the_title_menu_ends_with_the_library() {
+        let app = title();
+        assert_eq!(app.menu_rows().last(), Some(&MenuRow::Library));
+        let screen = render(&app).0;
+        assert!(
+            screen.contains("6. Library Every strategy, with a worked example"),
+            "{screen}"
+        );
+        assert!(screen.contains("keys 1-6"), "{screen}");
+    }
+
+    #[test]
+    fn six_enter_or_a_click_opens_the_map_at_the_first_technique() {
+        let map = Some(Library::Map {
+            at: Technique::FullHouse,
+        });
+        let mut app = title();
+        key(&mut app, KeyCode::Char('6'));
+        assert_eq!(app.library, map);
+
+        let mut app = title();
+        while app.menu_rows()[app.menu_cursor] != MenuRow::Library {
+            key(&mut app, KeyCode::Down);
+        }
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.library, map);
+
+        let mut app = title();
+        let (_, hits) = render(&app);
+        let row = hits
+            .iter()
+            .find(|h| h.action == Some(Action::OpenLibrary))
+            .unwrap();
+        click(&mut app, row.rect.x + 2, row.rect.y);
+        assert_eq!(app.library, map);
+    }
+
+    #[test]
+    fn the_in_game_picker_has_no_library() {
+        let mut app = app_with_game(Difficulty::Easy);
+        key(&mut app, KeyCode::Char('d'));
+        let (screen, hits) = render(&app);
+        assert!(!screen.contains("Library"), "{screen}");
+        assert!(screen.contains("keys 1-5"));
+        assert!(hits.iter().all(|h| h.action != Some(Action::OpenLibrary)));
+        key(&mut app, KeyCode::Char('6'));
+        assert_eq!(app.library, None);
+    }
+
+    #[test]
+    fn map_keys_move_open_and_go_back() {
+        let mut app = title();
+        key(&mut app, KeyCode::Char('6'));
+        for code in [
+            KeyCode::Right,
+            KeyCode::Right,
+            KeyCode::Down,
+            KeyCode::Down,
+            KeyCode::Down,
+        ] {
+            key(&mut app, code);
+        }
+        let sky = Technique::Skyscraper;
+        assert_eq!(app.library, Some(Library::Map { at: sky }));
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.library, Some(Library::Lesson { at: sky, stage: 0 }));
+        key(&mut app, KeyCode::Esc);
+        assert_eq!(app.library, Some(Library::Map { at: sky }));
+        key(&mut app, KeyCode::Esc);
+        assert_eq!(app.library, None);
+    }
+
+    #[test]
+    fn lesson_keys_step_and_turn_pages_from_stage_one() {
+        let mut app = title();
+        app.apply(Action::OpenLibrary);
+        app.apply(Action::LibraryOpen(Technique::EmptyRectangle));
+        key(&mut app, KeyCode::Right);
+        key(&mut app, KeyCode::Right);
+        key(&mut app, KeyCode::Right);
+        let at = Technique::EmptyRectangle;
+        assert_eq!(app.library, Some(Library::Lesson { at, stage: 2 }));
+        key(&mut app, KeyCode::Down);
+        let at = Technique::XYWing;
+        assert_eq!(app.library, Some(Library::Lesson { at, stage: 0 }));
+        key(&mut app, KeyCode::Char('j'));
+        key(&mut app, KeyCode::Esc);
+        let at = Technique::Swordfish;
+        assert_eq!(app.library, Some(Library::Map { at }));
+    }
+
+    #[test]
+    fn help_opens_over_the_library_and_closes_back_to_it() {
+        let mut app = title();
+        app.apply(Action::OpenLibrary);
+        app.apply(Action::LibraryOpen(Technique::Crane));
+        key(&mut app, KeyCode::Char('?'));
+        assert_eq!(app.top(), Some(Overlay::Help));
+        key(&mut app, KeyCode::Down); // swallowed by Help
+        key(&mut app, KeyCode::Esc);
+        assert_eq!(app.top(), None);
+        let at = Technique::Crane;
+        assert_eq!(app.library, Some(Library::Lesson { at, stage: 0 }));
+    }
+
+    #[test]
+    fn the_library_leaves_a_saved_game_alone() {
+        let (p, s) = test_board();
+        let mut app = title();
+        app.resume = Some(Game::new(Difficulty::Hard, p, s));
+        app.menu_cursor = 0;
+        key(&mut app, KeyCode::Char('6'));
+        key(&mut app, KeyCode::Enter);
+        key(&mut app, KeyCode::Char('c')); // not Continue while reading
+        assert!(app.game.is_none());
+        key(&mut app, KeyCode::Esc);
+        key(&mut app, KeyCode::Esc);
+        assert_eq!(app.menu_rows().first(), Some(&MenuRow::Continue));
+        let saved = app.resume.as_ref().map(|g| g.difficulty);
+        assert_eq!(saved, Some(Difficulty::Hard));
+        key(&mut app, KeyCode::Char('c'));
+        assert!(app.game.is_some());
+        assert_eq!(app.library, None);
     }
 }
