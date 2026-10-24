@@ -335,6 +335,52 @@ pub fn lesson(t: Technique) -> Lesson {
     }
 }
 
+/// A strategy in one line, for the library map's gist line beside its
+/// name. Like the lessons: general terms (no cells, no digits), in the
+/// words that strategy's lesson and legend use.
+#[allow(dead_code)] // drawn on the library map (Task 5)
+pub fn gist(t: Technique) -> &'static str {
+    use Technique::*;
+    match t {
+        FullHouse => "the one empty cell left in a row, column or box",
+        NakedSingle => "a cell where only one digit fits",
+        HiddenSingle => "a digit that fits only one cell in a row, column or box",
+        Pointing => "a box's spots for a digit all in one row or column",
+        Claiming => "a row or column's spots for a digit all in one box",
+        NakedPair => "two cells where only the same two digits fit",
+        HiddenPair => "two digits that fit only the same two cells",
+        NakedTriple => "three cells where only three digits fit",
+        HiddenTriple => "three digits that fit only the same three cells",
+        NakedQuad => "four cells where only four digits fit",
+        HiddenQuad => "four digits that fit only the same four cells",
+        XWing => "a digit's two spots in two rows make a rectangle",
+        Skyscraper => "two rows (or columns), two spots each, with a shared base",
+        TwoStringKite => "a row and a column, two spots each, tied at a knot",
+        Crane => "a box and a line, two spots each, joined by a link",
+        EmptyRectangle => "a box's spots in one row and column, and a pair outside",
+        XYWing => "a two-digit pivot and two pincers sharing a third digit",
+        Swordfish => "an X-Wing on three rows and three columns",
+        XYZWing => "an XY-Wing whose pivot fits three digits",
+        WWing => "two matching two-digit ends joined by a bridge",
+        FinnedXWing => "an X-Wing with fins in one box",
+        RemotePair => "cells fitting the same two digits, coloured A and B",
+        SimpleColouring => "one digit's pairs chained and coloured A and B",
+        UniqueRectangle => "four corners that could swap would mean two solutions",
+        BugPlusOne => "every empty cell fits two digits but one fits three",
+        Jellyfish => "an X-Wing on four rows and four columns",
+        FinnedSwordfish => "a Swordfish with fins in one box",
+        WXYZWing => "a pivot and three cells fitting four digits, one loose",
+        FinnedJellyfish => "a Jellyfish with fins in one box",
+        XChain => "one digit's strong and weak links, chained",
+        XYChain => "a path of cells that each fit only two digits",
+        Aic => "strong and weak links across cells and digits",
+        AlsXz => "two ALSs joined by a link digit",
+        AlsXyWing => "three ALSs joined by two link digits",
+        SueDeCoq => "where a box meets a line, digits split between them",
+        DeathBlossom => "a stem cell with a petal for each of its digits",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -342,6 +388,34 @@ mod tests {
     use crate::tutor::examples::example;
     use crate::ui::BOARD_H;
     use crate::ui::tutor::{TEXT_W, wrap};
+
+    /// The longest gist: it shares the map's gist line with the name.
+    const GIST_MAX: usize = 60;
+
+    #[test]
+    fn every_technique_has_a_short_general_gist() {
+        for &t in Technique::ALL {
+            let g = gist(t);
+            assert!(!g.is_empty(), "{t:?}");
+            assert!(g.chars().count() <= GIST_MAX, "{t:?}: {g}");
+            assert!(
+                !g.contains(|c: char| c.is_ascii_digit()),
+                "{t:?} names a digit: {g}"
+            );
+            assert_eq!(g, g.trim(), "{t:?}");
+            assert!(
+                !g.ends_with('.'),
+                "{t:?}: a gist is a phrase, not a sentence"
+            );
+        }
+    }
+
+    #[test]
+    fn every_technique_has_a_worked_example() {
+        for &t in Technique::ALL {
+            assert!(example(t).is_some(), "{t:?}");
+        }
+    }
 
     #[test]
     fn lesson_text_fits_the_pane() {
