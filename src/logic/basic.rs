@@ -3,7 +3,7 @@
 
 use super::{
     Grid, Pattern, Role, Step, Technique, a_digit, bits, cell_list, digit_choice, digit_list,
-    house_name, rc, subsets,
+    house_name, rc, sees, subsets,
 };
 use crate::sudoku::{ALL_DIGITS, CELLS, HOUSES, N, box_of_cell, col_of, row_of};
 
@@ -63,9 +63,14 @@ impl Grid {
                     continue;
                 }
                 let cell = usize::from(house[pos.trailing_zeros() as usize]);
+                let others = house
+                    .iter()
+                    .map(|&c| usize::from(c))
+                    .filter(|&c| c != cell && self.values[c] == 0);
                 let pattern = Pattern {
                     digit: Some(digit),
                     houses: vec![h],
+                    placed: self.ruling_out(digit, others.collect()),
                     ..Pattern::default()
                 };
                 let why = format!("In {}, {digit} fits only in {}.", house_name(h), rc(cell));
@@ -73,6 +78,25 @@ impl Grid {
             }
         }
         None
+    }
+
+    /// Placed copies of `digit` that, between them, see every one of
+    /// `cells` a copy sees: the ones that rule those cells out. Each pick
+    /// sees the most cells still open, so a few copies cover them all.
+    fn ruling_out(&self, digit: u8, mut cells: Vec<usize>) -> Vec<usize> {
+        let copies: Vec<usize> = (0..CELLS).filter(|&c| self.values[c] == digit).collect();
+        let mut picked = Vec::new();
+        loop {
+            let seen = |p: usize, cells: &[usize]| cells.iter().filter(|&&c| sees(p, c)).count();
+            let Some(best) = copies.iter().copied().max_by_key(|&p| seen(p, &cells)) else {
+                return picked;
+            };
+            if seen(best, &cells) == 0 {
+                return picked;
+            }
+            picked.push(best);
+            cells.retain(|&c| !sees(best, c));
+        }
     }
 
     /// Pointing: a digit confined to one line within a box can't appear
@@ -265,6 +289,21 @@ mod tests {
         );
         assert_eq!(step.pattern.houses, [4]);
         assert_eq!(step.why, "In row 5, 7 fits only in r5c4.");
+    }
+
+    #[test]
+    fn hidden_single_lights_the_copies_that_rule_cells_out() {
+        let mut grid = staged(&[
+            (idx(4, 3), &[7, 8]),
+            (idx(4, 4), &[8, 9]),
+            (idx(4, 5), &[8, 9]),
+        ]);
+        // The 7 in box 5 sees both other cells; the one in column 5 sees
+        // just one of them, so it adds nothing.
+        grid.values[idx(3, 4)] = 7;
+        grid.values[idx(8, 4)] = 7;
+        let step = grid.hidden_single().unwrap();
+        assert_eq!(step.pattern.placed, [idx(3, 4)]);
     }
 
     #[test]

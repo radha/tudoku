@@ -356,7 +356,8 @@ pub(super) fn draw_lesson(
 }
 
 /// What the example's colours mean: a chip for each role the strategy
-/// marks, then what the step removes or places.
+/// marks, the placed digits it reasons from, then what the step removes
+/// or places.
 fn legend(lines: &mut Vec<Line<'static>>, lesson: &Lesson, step: &Step) {
     let muted = Style::default().fg(MUTED);
     let bold = Modifier::BOLD;
@@ -372,6 +373,15 @@ fn legend(lines: &mut Vec<Line<'static>>, lesson: &Lesson, step: &Step) {
                 Span::styled(format!(" {name}"), muted),
             ]));
         }
+    }
+    if let (Some(d), false) = (step.pattern.digit, step.pattern.placed.is_empty()) {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!(" {d} "),
+                Style::default().fg(INK).bg(PAT_BG).add_modifier(bold),
+            ),
+            Span::styled(" rules cells out", muted),
+        ]));
     }
     lines.push(match &step.effect {
         Effect::Place { digit, .. } => Line::from(vec![
@@ -463,7 +473,8 @@ pub(super) struct FocusView<'a> {
     /// The cell you have selected, on your own board; none on an example.
     pub selected: Option<(usize, usize)>,
     pub step: &'a Step,
-    /// 0 houses and cells, 1 adds marks and links, 2 adds the effect.
+    /// 0 houses and cells, 1 adds marks, links and the placed digits it
+    /// reasons from, 2 adds the effect.
     pub stage: u8,
     /// The heavy grid lines: `GRID_BOX` for your game, `VIOLET` for an example.
     pub frame: Color,
@@ -520,6 +531,11 @@ pub(super) fn draw_focus_board(
     for m in &pattern.marks {
         pat[m.cell] = true;
     }
+    if view.stage >= 1 {
+        for &c in &pattern.placed {
+            pat[c] = true;
+        }
+    }
     let mut touched = [false; CELLS];
     let mut removed = [0u16; CELLS];
     match effect {
@@ -562,7 +578,7 @@ pub(super) fn draw_focus_board(
             buf.set_style(Rect::new(x, y, CELL_W, CELL_H), Style::default().bg(bg));
             let v = view.values[i];
             if v != 0 {
-                let on = pattern.digit == Some(v);
+                let on = pattern.digit == Some(v) || pat[i];
                 let fg = if is_sel {
                     BRIGHT
                 } else if on {
@@ -585,7 +601,9 @@ pub(super) fn draw_focus_board(
                 });
                 continue;
             }
-            let shown = pat[i] || touched[i];
+            // Notes show all along the pattern's houses too, so you can
+            // check what it says about the rest of them.
+            let shown = pat[i] || touched[i] || band[i];
             for d in 1..=9u8 {
                 let bit = 1u16 << d;
                 let wanted = match pattern.digit {
@@ -1193,6 +1211,52 @@ pub(crate) mod tests {
         let footer = &lines[usize::from(oy + BOARD_H)];
         assert!(footer.contains("show me in my game"), "{footer}");
         assert!(!footer.contains("fill"), "{footer}");
+    }
+
+    #[test]
+    fn a_hidden_single_lights_what_rules_cells_out_on_its_second_step() {
+        let t = Technique::HiddenSingle;
+        let placed = example(t).unwrap().step.pattern.placed;
+        assert!(!placed.is_empty());
+        let (ox, oy) = board_origin(Rect::new(0, 0, W, 50));
+        for stage in 0..EXAMPLE_STAGES {
+            let app = app_explaining(t, stage);
+            let buf = screen(&app, W, 50);
+            for &c in &placed {
+                let (x, y) = cell_screen(ox, oy, c / 9, c % 9);
+                let lit = buf[(x + CELL_W / 2, y + CELL_H / 2)].bg == PAT_BG;
+                assert_eq!(lit, stage >= 1, "{} at step {}", rc(c), stage + 1);
+            }
+            let pane = panel_text(&draw(&app, W, 50).0, W);
+            assert!(pane.contains("rules cells out"), "{pane}");
+        }
+    }
+
+    #[test]
+    fn notes_show_along_the_houses_of_a_pattern() {
+        // A hidden pair's claim is about the rest of its house: you need
+        // to see that the two digits fit nowhere else there.
+        let t = Technique::HiddenPair;
+        let ex = example(t).unwrap();
+        let buf = screen(&app_explaining(t, 0), W, 50);
+        let (ox, oy) = board_origin(Rect::new(0, 0, W, 50));
+        let mut checked = 0;
+        for &h in &ex.step.pattern.houses {
+            for &c in &HOUSES[h] {
+                let c = usize::from(c);
+                if ex.values[c] != 0 {
+                    continue;
+                }
+                let (x, y) = cell_screen(ox, oy, c / 9, c % 9);
+                for d in 1..=9u8 {
+                    let (sx, sy) = slot(x, y, d);
+                    let shown = buf[(sx, sy)].symbol() == d.to_string();
+                    assert_eq!(shown, ex.cands[c] & (1 << d) != 0, "{} {d}", rc(c));
+                }
+                checked += 1;
+            }
+        }
+        assert!(checked > 2, "the house has cells beyond the pair");
     }
 
     #[test]

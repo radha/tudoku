@@ -160,6 +160,7 @@ impl Grid {
                         };
                         let pattern = Pattern {
                             cells,
+                            houses: vec![house],
                             marks,
                             links: vec![
                                 link(a, p, LinkKind::Weak),

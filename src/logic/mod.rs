@@ -200,6 +200,8 @@ pub struct Pattern {
     pub cells: Vec<usize>,
     /// Indexes into `HOUSES`, tinted on the board.
     pub houses: Vec<usize>,
+    /// Filled cells whose digits the step reasons from, lit on the board.
+    pub placed: Vec<usize>,
     pub marks: Vec<Mark>,
     pub links: Vec<Link>,
 }
@@ -960,6 +962,7 @@ mod tests {
         }
         assert!(p.houses.iter().all(|&h| h < HOUSES.len()), "{t:?}");
         assert!(p.cells.iter().all(|&c| g.values[c] == 0), "{t:?}");
+        assert!(p.placed.iter().all(|&c| g.values[c] != 0), "{t:?}");
         assert!(!step.why.is_empty(), "{t:?}");
     }
 
