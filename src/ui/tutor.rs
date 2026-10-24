@@ -109,17 +109,38 @@ fn cut(mut lines: Vec<String>, room: usize, style: Style) -> Vec<Line<'static>> 
 }
 
 /// A key the pane offers, and what it does.
-struct Key {
-    key: &'static str,
-    what: &'static str,
-    action: Action,
+pub(super) struct Key {
+    pub key: &'static str,
+    pub what: &'static str,
+    pub action: Action,
+    /// What a click on the key's first glyph does instead, for a pair of
+    /// arrows: `←` steps back where the rest of the line steps on.
+    pub back: Option<Action>,
 }
 
 const BACK: Key = Key {
     key: "Esc",
     what: "back to solving",
     action: Action::CloseTutor,
+    back: None,
 };
+
+/// The keys beside the tutor's worked example, and under it.
+pub(super) const EXPLAIN_KEYS: [Key; 3] = [
+    Key {
+        key: "← →",
+        what: "step",
+        action: Action::ExampleStep(1),
+        back: Some(Action::ExampleStep(-1)),
+    },
+    Key {
+        key: "t",
+        what: "show me in my game",
+        action: Action::Tutor,
+        back: None,
+    },
+    BACK,
+];
 
 /// The pane's frame alone, for while the game is paused: like the board,
 /// what the tutor has to say waits for the clock.
@@ -163,11 +184,13 @@ pub(super) fn draw_pane(frame: &mut Frame, area: Rect, tutor: &Tutor, hits: &mut
                     key: "t",
                     what: "what's that?",
                     action: Action::Tutor,
+                    back: None,
                 },
                 Key {
                     key: "Esc",
                     what: "I'll find it",
                     action: Action::CloseTutor,
+                    back: None,
                 },
             ]
         }
@@ -178,6 +201,7 @@ pub(super) fn draw_pane(frame: &mut Frame, area: Rect, tutor: &Tutor, hits: &mut
                 key: "a",
                 what: "do it for me",
                 action: Action::TutorApply,
+                back: None,
             };
             let keys = if tutor.can_apply() {
                 vec![apply, BACK]
@@ -215,6 +239,7 @@ pub(super) fn draw_pane(frame: &mut Frame, area: Rect, tutor: &Tutor, hits: &mut
                 key: "a",
                 what: "place one digit",
                 action: Action::TutorApply,
+                back: None,
             };
             vec![place, BACK]
         }
@@ -224,8 +249,9 @@ pub(super) fn draw_pane(frame: &mut Frame, area: Rect, tutor: &Tutor, hits: &mut
 }
 
 /// Draw `lines` and then `keys` into the pane's `inner` area, each key a
-/// click target across the pane. The keys stay in view even if the text
-/// runs long. Returns the row each key is on.
+/// click target across the pane; a key's `back` takes clicks on its first
+/// glyph and the padding beside it. The keys stay in view even if the text
+/// runs long.
 fn put_keys(
     frame: &mut Frame,
     area: Rect,
@@ -233,7 +259,7 @@ fn put_keys(
     mut lines: Vec<Line<'static>>,
     keys: &[Key],
     hits: &mut Vec<Hit>,
-) -> Vec<u16> {
+) {
     let muted = Style::default().fg(MUTED);
     let room = usize::from(inner.height).saturating_sub(keys.len());
     if lines.len() > room {
@@ -242,7 +268,6 @@ fn put_keys(
             *last = Line::styled("…", muted);
         }
     }
-    let mut rows = Vec::new();
     for key in keys {
         let y = inner.y + lines.len() as u16;
         push_hit(
@@ -250,7 +275,10 @@ fn put_keys(
             Rect::new(area.x + 1, y, area.width.saturating_sub(2), 1),
             Some(key.action),
         );
-        rows.push(y);
+        if let Some(back) = key.back {
+            let glyph = Rect::new(area.x + 1, y, inner.x + 2 - (area.x + 1), 1);
+            push_hit(hits, glyph, Some(back));
+        }
         // Keys line up in a column, unless that would run off the pane.
         let column = if 5 + key.what.chars().count() <= TEXT_W {
             5
@@ -266,12 +294,17 @@ fn put_keys(
         ]));
     }
     frame.render_widget(Paragraph::new(lines), inner);
-    rows
 }
 
 /// The pane beside a worked example, the whole side panel: the strategy
-/// in numbered steps, a legend for the example's colours, and the keys.
-pub(super) fn draw_lesson(frame: &mut Frame, area: Rect, example: &Example, hits: &mut Vec<Hit>) {
+/// in numbered steps, a legend for the example's colours, and `keys`.
+pub(super) fn draw_lesson(
+    frame: &mut Frame,
+    area: Rect,
+    example: &Example,
+    keys: &[Key],
+    hits: &mut Vec<Hit>,
+) {
     let t = example.step.technique;
     let lesson = lesson(t);
     let block = popup_block(&heading(t));
@@ -299,26 +332,7 @@ pub(super) fn draw_lesson(frame: &mut Frame, area: Rect, example: &Example, hits
     legend(&mut lines, &lesson, &example.step);
     lines.push(Line::from(""));
 
-    let keys = [
-        Key {
-            key: "← →",
-            what: "step",
-            action: Action::ExampleStep(1),
-        },
-        Key {
-            key: "t",
-            what: "show me in my game",
-            action: Action::Tutor,
-        },
-        BACK,
-    ];
-    let rows = put_keys(frame, area, inner, lines, &keys, hits);
-    // A click on the left arrow (or the padding beside it) steps back;
-    // anywhere else on that line, on.
-    if let Some(&y) = rows.first() {
-        let back = Rect::new(area.x + 1, y, inner.x + 2 - (area.x + 1), 1);
-        push_hit(hits, back, Some(Action::ExampleStep(-1)));
-    }
+    put_keys(frame, area, inner, lines, keys, hits);
 }
 
 /// What the example's colours mean: a chip for each role the strategy
@@ -1042,6 +1056,20 @@ mod tests {
         );
         for x in [x - 1, x + 2] {
             assert_eq!(shown[(x, y)].symbol(), "╍", "the line runs on either side");
+        }
+    }
+
+    #[test]
+    fn explain_footer_matches_the_pane_keys() {
+        let app = app_explaining(Technique::Pointing, 0);
+        let (lines, _) = draw(&app, W, 50);
+        let (_, oy) = board_origin(Rect::new(0, 0, W, 50));
+        let footer = &lines[usize::from(oy + BOARD_H)];
+        let pane = panel_text(&lines, W);
+        for key in &EXPLAIN_KEYS {
+            let pair = format!("{} {}", key.key, key.what);
+            assert!(footer.contains(&pair), "{footer}");
+            assert!(pane.contains(key.what), "{pane}");
         }
     }
 

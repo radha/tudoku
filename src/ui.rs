@@ -927,7 +927,6 @@ fn draw_game(frame: &mut Frame, area: Rect, app: &App, game: &Game, hits: &mut V
     // panel underneath it, since terminals are almost always much wider
     // than they are tall. The header lines up with the board's left edge.
     let (ox, oy) = board_origin(area);
-    let top_y = layout_top(area);
 
     // What the tutor puts in place of your board: its worked example, or
     // your board narrowed to its step. Pausing hides both, like the board.
@@ -939,37 +938,21 @@ fn draw_game(frame: &mut Frame, area: Rect, app: &App, game: &Game, hits: &mut V
         TutorStage::Explain { stage } => Some((examples::example(step.technique)?, stage)),
         _ => None,
     });
+    if let Some((ex, stage)) = &example {
+        let header = tutor::explain_header(ex.step.technique, *stage);
+        draw_explain(frame, area, header, ex, *stage, &tutor::EXPLAIN_KEYS, hits);
+        return;
+    }
     let focus = step
-        .filter(|&(_, stage)| example.is_none() && stage != TutorStage::Nudge)
+        .filter(|&(_, stage)| stage != TutorStage::Nudge)
         .map(|(step, _)| step);
 
-    let header = Rect::new(ox, top_y, area.right() - ox, 2);
-    let (top, bottom) = match &example {
-        Some((ex, stage)) => tutor::explain_header(ex.step.technique, *stage),
-        None => header_lines(game, app.stats.level(game.difficulty).best(), header.width),
-    };
-    frame.render_widget(Paragraph::new(vec![top, bottom]), header);
-    if header_h(area) > 2 {
-        frame.render_widget(
-            Paragraph::new("─".repeat(usize::from(BLOCK_W))).style(Style::default().fg(GRID_THIN)),
-            Rect::new(ox, top_y + 2, BLOCK_W, 1),
-        );
-    }
+    let width = area.right() - ox;
+    let header = header_lines(game, app.stats.level(game.difficulty).best(), width);
+    draw_header(frame, area, header);
 
     let labels_y = if header_h(area) > 2 { oy - 1 } else { oy };
-    if let Some((ex, stage)) = &example {
-        // A sample board: nothing on it is selected or can be clicked,
-        // since it isn't your game.
-        let view = tutor::FocusView {
-            values: &ex.values,
-            cands: &ex.cands,
-            selected: None,
-            step: &ex.step,
-            stage: *stage,
-            frame: VIOLET,
-        };
-        tutor::draw_focus_board(frame, ox, oy, labels_y, &view);
-    } else if let Some(step) = focus {
+    if let Some(step) = focus {
         let (_, grid) = crate::tutor::read(&game.values, &game.notes);
         let view = tutor::FocusView {
             values: &game.values,
@@ -993,14 +976,14 @@ fn draw_game(frame: &mut Frame, area: Rect, app: &App, game: &Game, hits: &mut V
 
     let panel_x = ox + BOARD_W + PANEL_GAP;
     match &app.tutor {
-        // Beside an example, the tutor takes the whole side panel. It
-        // keeps it while paused, so nothing jumps about.
+        // Explaining, the tutor takes the whole side panel. It keeps it
+        // while paused, so nothing jumps about.
         Some(t) if matches!(t.stage, TutorStage::Explain { .. }) => {
             let pane = Rect::new(panel_x, oy, PANEL_W, BOARD_H);
-            match &example {
-                Some((ex, _)) => tutor::draw_lesson(frame, pane, ex, hits),
-                None if game.paused => tutor::draw_pane_frame(frame, pane),
-                None => tutor::draw_pane(frame, pane, t, hits),
+            if game.paused {
+                tutor::draw_pane_frame(frame, pane);
+            } else {
+                tutor::draw_pane(frame, pane, t, hits);
             }
         }
         // Otherwise it takes the buttons' place, and the number pad moves
@@ -1023,42 +1006,92 @@ fn draw_game(frame: &mut Frame, area: Rect, app: &App, game: &Game, hits: &mut V
         }
     }
 
-    // Footer hints, directly under the board.
-    let footer_y = oy + BOARD_H;
-    if footer_y < area.bottom() {
-        let keys: &[(&str, &str)] = if example.is_some() {
-            &[
-                ("← →", "step"),
-                ("t", "show me in my game"),
-                ("Esc", "back to solving"),
-            ]
-        } else {
-            &[
-                ("arrows/hjkl", "move"),
-                ("1-9", "fill"),
-                ("n", "notes"),
-                ("u", "undo"),
-                ("t", "tutor"),
-                ("e", "erase"),
-                ("d", "level"),
-                ("?", "help"),
-                ("q", "quit"),
-            ]
-        };
-        let footer: Vec<Span> = keys
-            .iter()
-            .flat_map(|&(k, what)| {
-                [
-                    Span::styled(k, Style::default().fg(INK).add_modifier(Modifier::BOLD)),
-                    Span::styled(format!(" {what}  "), Style::default().fg(MUTED)),
-                ]
-            })
-            .collect();
+    draw_footer(
+        frame,
+        area,
+        &[
+            ("arrows/hjkl", "move"),
+            ("1-9", "fill"),
+            ("n", "notes"),
+            ("u", "undo"),
+            ("t", "tutor"),
+            ("e", "erase"),
+            ("d", "level"),
+            ("?", "help"),
+            ("q", "quit"),
+        ],
+    );
+}
+
+/// The two header lines over the board, and the divider under them when
+/// the terminal has a row to spare.
+fn draw_header(frame: &mut Frame, area: Rect, (top, bottom): (Line<'static>, Line<'static>)) {
+    let (ox, _) = board_origin(area);
+    let top_y = layout_top(area);
+    let header = Rect::new(ox, top_y, area.right() - ox, 2);
+    frame.render_widget(Paragraph::new(vec![top, bottom]), header);
+    if header_h(area) > 2 {
         frame.render_widget(
-            Paragraph::new(Line::from(footer)),
-            Rect::new(ox, footer_y, area.right() - ox, 1),
+            Paragraph::new("─".repeat(usize::from(BLOCK_W))).style(Style::default().fg(GRID_THIN)),
+            Rect::new(ox, top_y + 2, BLOCK_W, 1),
         );
     }
+}
+
+/// Key hints, directly under the board, if there's a row for them.
+fn draw_footer(frame: &mut Frame, area: Rect, keys: &[(&str, &str)]) {
+    let (ox, oy) = board_origin(area);
+    let footer_y = oy + BOARD_H;
+    if footer_y >= area.bottom() {
+        return;
+    }
+    let footer: Vec<Span> = keys
+        .iter()
+        .flat_map(|&(k, what)| {
+            [
+                Span::styled(
+                    k.to_string(),
+                    Style::default().fg(INK).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(format!(" {what}  "), Style::default().fg(MUTED)),
+            ]
+        })
+        .collect();
+    frame.render_widget(
+        Paragraph::new(Line::from(footer)),
+        Rect::new(ox, footer_y, area.right() - ox, 1),
+    );
+}
+
+/// The tutor's explain screen: `header`, the worked example in place of a
+/// board, the lesson beside it with `keys`, and the same keys under it.
+fn draw_explain(
+    frame: &mut Frame,
+    area: Rect,
+    header: (Line<'static>, Line<'static>),
+    example: &examples::Example,
+    stage: u8,
+    keys: &[tutor::Key],
+    hits: &mut Vec<Hit>,
+) {
+    let (ox, oy) = board_origin(area);
+    draw_header(frame, area, header);
+    // A sample board: nothing on it is selected or can be clicked, since
+    // it isn't your game.
+    let labels_y = if header_h(area) > 2 { oy - 1 } else { oy };
+    let view = tutor::FocusView {
+        values: &example.values,
+        cands: &example.cands,
+        selected: None,
+        step: &example.step,
+        stage,
+        frame: VIOLET,
+    };
+    tutor::draw_focus_board(frame, ox, oy, labels_y, &view);
+    let pane = Rect::new(ox + BOARD_W + PANEL_GAP, oy, PANEL_W, BOARD_H);
+    tutor::draw_lesson(frame, pane, example, keys, hits);
+    let pairs: Vec<(&str, &str)> = keys.iter().map(|k| (k.key, k.what)).collect();
+    draw_footer(frame, area, &pairs);
 }
 
 // ------------------------------------------------------------ main render
