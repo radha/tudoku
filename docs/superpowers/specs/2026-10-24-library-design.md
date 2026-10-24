@@ -134,7 +134,8 @@ the example's three stages. Each technique opens at stage 1.
 Only these differ:
 
 - **Header**: the `EXAMPLE` badge line becomes a `LIBRARY` badge with the
-  technique's level and place in the whole list, e.g. "Hard · 14 of 36".
+  technique's level and place in the whole list, e.g. "Hard · 13 of 36"
+  for Skyscraper.
   The second header line stays as the tutor has it ("Skyscraper · step 1
   of 3 ← → steps through it").
 - **Keys at the foot of the pane**:
