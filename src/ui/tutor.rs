@@ -125,14 +125,17 @@ const BACK: Key = Key {
     back: None,
 };
 
+/// Stepping through a worked example.
+const STEP: Key = Key {
+    key: "← →",
+    what: "step",
+    action: Action::ExampleStep(1),
+    back: Some(Action::ExampleStep(-1)),
+};
+
 /// The keys beside the tutor's worked example, and under it.
 pub(super) const EXPLAIN_KEYS: [Key; 3] = [
-    Key {
-        key: "← →",
-        what: "step",
-        action: Action::ExampleStep(1),
-        back: Some(Action::ExampleStep(-1)),
-    },
+    STEP,
     Key {
         key: "t",
         what: "show me in my game",
@@ -140,6 +143,23 @@ pub(super) const EXPLAIN_KEYS: [Key; 3] = [
         back: None,
     },
     BACK,
+];
+
+/// The keys beside a worked example in the library, and under it.
+pub(super) const LIBRARY_KEYS: [Key; 3] = [
+    STEP,
+    Key {
+        key: "↑ ↓",
+        what: "other techniques",
+        action: Action::LibraryTurn(1),
+        back: Some(Action::LibraryTurn(-1)),
+    },
+    Key {
+        key: "Esc",
+        what: "back to the list",
+        action: Action::LibraryBack,
+        back: None,
+    },
 ];
 
 /// The pane's frame alone, for while the game is paused: like the board,
@@ -695,7 +715,7 @@ pub(super) fn draw_focus_board(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -1074,7 +1094,7 @@ mod tests {
     }
 
     /// Your easy game, with the tutor explaining `t` at `stage`.
-    fn app_explaining(t: Technique, stage: u8) -> App {
+    pub(crate) fn app_explaining(t: Technique, stage: u8) -> App {
         let (puzzle, solution) = test_board();
         let mut app = App::new(Store::none());
         app.start_game(Game::new(Difficulty::Easy, puzzle, solution));

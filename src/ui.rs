@@ -18,6 +18,7 @@ use crate::game::Game;
 use crate::sudoku::{box_of, idx};
 use crate::tutor::{Advice, examples};
 
+mod library;
 pub(crate) mod tutor;
 
 // ---------------------------------------------------------------- palette
@@ -1138,9 +1139,10 @@ pub fn render(frame: &mut Frame, app: &App) -> Vec<Hit> {
         return hits;
     }
 
-    match &app.game {
-        None => draw_title(frame, area, app, &mut hits),
-        Some(game) => draw_game(frame, area, app, game, &mut hits),
+    match (&app.game, app.library) {
+        (Some(game), _) => draw_game(frame, area, app, game, &mut hits),
+        (None, Some(shown)) => library::draw_library(frame, area, shown, &mut hits),
+        (None, None) => draw_title(frame, area, app, &mut hits),
     }
     // Only the top popup is drawn: nothing under it can be used anyway,
     // and half-covered frames would peek out around it.
@@ -1158,6 +1160,7 @@ pub fn render(frame: &mut Frame, app: &App) -> Vec<Hit> {
 mod tests {
     use super::*;
     use crate::app::{Tutor, TutorStage};
+    use crate::library::Library;
     use crate::logic::{Effect, Grid, Pattern, Step, Technique, rc};
     use crate::store::Store;
     use crate::sudoku::{CELLS, candidates_mask, parse_board, test_board};
@@ -1609,6 +1612,12 @@ mod tests {
                 tutored.apply(Action::Tutor);
             }
             screens.push(tutored);
+        }
+        let at = Technique::Skyscraper;
+        for shown in [Library::Map { at }, Library::Lesson { at, stage: 2 }] {
+            let mut reading = App::new(Store::none());
+            reading.library = Some(shown);
+            screens.push(reading);
         }
         for (k, app) in screens.iter().enumerate() {
             for (w, h) in [(W, 50), (40, 20)] {

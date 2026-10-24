@@ -2,8 +2,6 @@
 //! level in `Technique::ALL`'s order, easiest first, to read like a short
 //! course or to look a name up.
 
-#![allow(dead_code)] // used once the library is drawn (Task 5)
-
 use crate::deal::{Difficulty, level_of};
 use crate::logic::Technique;
 

@@ -338,7 +338,6 @@ pub fn lesson(t: Technique) -> Lesson {
 /// A strategy in one line, for the library map's gist line beside its
 /// name. Like the lessons: general terms (no cells, no digits), in the
 /// words that strategy's lesson and legend use.
-#[allow(dead_code)] // drawn on the library map (Task 5)
 pub fn gist(t: Technique) -> &'static str {
     use Technique::*;
     match t {
