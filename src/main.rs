@@ -7,6 +7,7 @@
 mod app;
 mod deal;
 mod game;
+mod library;
 mod logic;
 mod store;
 mod sudoku;
