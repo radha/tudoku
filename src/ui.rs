@@ -629,6 +629,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         ("Tutor", "t names a strategy; t again explains it;"),
         ("", "t once more shows it on your board"),
         ("", "a does it for me  •  Esc closes the tutor"),
+        ("Learn", "6 on the title menu: the techniques library"),
         ("New", "N (capital) — fresh puzzle, same level"),
         ("Level", "d — change difficulty"),
         ("Pause", "p, or switch windows — stops the clock"),
@@ -1434,11 +1435,13 @@ mod tests {
         let (lines, _) = draw(&app, MIN_W, MIN_H);
         let screen = text(&lines);
         assert!(screen.contains("How to play"));
-        // The tutor: `t` three times, `a`, and Esc, each line whole.
+        // The tutor: `t` three times, `a`, and Esc, each line whole; then
+        // the library.
         for want in [
             "│  Tutor  t names a strategy; t again explains it;",
             "│         t once more shows it on your board",
             "│         a does it for me  •  Esc closes the tutor",
+            "│  Learn  6 on the title menu: the techniques library",
         ] {
             assert!(screen.contains(want), "{want}\n{screen}");
         }

@@ -38,8 +38,11 @@ strategies, and the levels are regraded around them, adding a fifth level.
 
 ## Non-goals
 
-- **No strategy library.** The owner said a library to browse won't help;
-  learning happens in their own puzzle. The tutor only appears when called.
+- **The tutor is not a library.** It only appears when called, and the
+  learning happens in your own puzzle. (A browsable library was ruled out
+  here at first; on 2026-10-24 the owner added one for vocabulary, to know
+  what's possible before meeting it in play. See
+  `2026-10-24-library-design.md`.)
 - No forcing chains, Nishio, or any trial-and-error method. Puzzles that
   need them are thrown away during dealing.
 - No tracking of which strategies you've "learned", and no adaptive
