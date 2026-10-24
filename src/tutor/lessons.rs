@@ -352,7 +352,7 @@ pub fn gist(t: Technique) -> &'static str {
         HiddenTriple => "three digits that fit only the same three cells",
         NakedQuad => "four cells where only four digits fit",
         HiddenQuad => "four digits that fit only the same four cells",
-        XWing => "a digit's two spots in two rows make a rectangle",
+        XWing => "a digit's two spots in two rows or columns form a rectangle",
         Skyscraper => "two rows (or columns), two spots each, with a shared base",
         TwoStringKite => "a row and a column, two spots each, tied at a knot",
         Crane => "a box and a line, two spots each, joined by a link",
@@ -406,6 +406,20 @@ mod tests {
                 !g.ends_with('.'),
                 "{t:?}: a gist is a phrase, not a sentence"
             );
+        }
+    }
+
+    #[test]
+    fn gists_cover_both_ways_a_lesson_says_it_works() {
+        for &t in Technique::ALL {
+            let swapped = lesson(t)
+                .steps
+                .iter()
+                .any(|s| s.contains("rows and columns swapped"));
+            if swapped {
+                let g = gist(t);
+                assert!(g.contains("rows") && g.contains("columns"), "{t:?}: {g}");
+            }
         }
     }
 

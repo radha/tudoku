@@ -1142,7 +1142,10 @@ pub fn render(frame: &mut Frame, app: &App) -> Vec<Hit> {
 
     match (&app.game, app.library) {
         (Some(game), _) => draw_game(frame, area, app, game, &mut hits),
-        (None, Some(shown)) => library::draw_library(frame, area, shown, &mut hits),
+        (None, Some(shown)) => {
+            let covered = !app.overlays.is_empty();
+            library::draw_library(frame, area, shown, covered, &mut hits);
+        }
         (None, None) => draw_title(frame, area, app, &mut hits),
     }
     // Only the top popup is drawn: nothing under it can be used anyway,

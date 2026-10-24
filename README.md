@@ -78,21 +78,6 @@ strategy it knows applies, it offers to place one correct digit.
 Every opening of the tutor counts on the header's 🎓 counter, and a
 puzzle you asked it about can't set a best time.
 
-## Library
-
-To learn the names before you need them, pick **Library** (`6`) on the
-title screen. It lays out every strategy the tutor knows, one column per
-level, easiest first, with a one-line gist of the highlighted one.
-
-- Arrows (or `hjkl`) move around; Enter, or a click, opens a strategy:
-  the tutor's explanation beside its worked example, as `t` `t` shows it.
-- `←` `→` step through the example; `↑` `↓` go to the previous or next
-  strategy, so you can read them all in order.
-- `Esc` goes back to the map, and from there to the title screen.
-
-It's only on the title screen, and reading it doesn't touch your saved
-game, your best times or the 🎓 counter.
-
 ### Strategies
 
 The tutor knows 36 strategies, easiest first within each level:
@@ -107,6 +92,21 @@ The tutor knows 36 strategies, easiest first within each level:
   WXYZ-Wing, finned Jellyfish
 - **Zen:** X-Chain, XY-Chain, AIC, ALS-XZ, ALS-XY-Wing, Sue de Coq,
   Death Blossom
+
+## Library
+
+To learn the names before you need them, pick **Library** (`6`) on the
+title screen. It lays out every strategy the tutor knows, one column per
+level, easiest first, with a one-line gist of the highlighted one.
+
+- Arrows (or `hjkl`) move around; Enter, or a click, opens a strategy:
+  the tutor's explanation beside its worked example, as `t` `t` shows it.
+- `←` `→` step through the example; `↑` `↓` go to the previous or next
+  strategy, so you can read them all in order.
+- `Esc` goes back to the map, and from there to the title screen.
+
+It's only on the title screen, and reading it doesn't touch your saved
+game, your best times or the 🎓 counter.
 
 ## Controls
 
@@ -129,7 +129,7 @@ The tutor knows 36 strategies, easiest first within each level:
 | Esc                            | close popup or tutor, see finished board  |
 
 On the title screen: `c` or `Enter` continues a saved game; `1-5`,
-arrows/hjkl + `Enter`, or a click starts a level.
+arrows/hjkl + `Enter`, or a click starts a level; `6` opens the library.
 
 ### Mouse
 

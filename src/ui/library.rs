@@ -34,8 +34,15 @@ const NAMES_Y: u16 = 4;
 /// rows; the last column's trailing gap is what gives way.
 const INDENT: &str = " ";
 
-/// Draw the library: the map, or a lesson.
-pub(super) fn draw_library(frame: &mut Frame, area: Rect, library: Library, hits: &mut Vec<Hit>) {
+/// Draw the library: the map, or a lesson. A map `covered` by a popup
+/// keeps only its header: the rest would just peek out around it.
+pub(super) fn draw_library(
+    frame: &mut Frame,
+    area: Rect,
+    library: Library,
+    covered: bool,
+    hits: &mut Vec<Hit>,
+) {
     match library {
         Library::Lesson { at, stage } => match example(at) {
             Some(ex) => {
@@ -49,9 +56,9 @@ pub(super) fn draw_library(frame: &mut Frame, area: Rect, library: Library, hits
                 let header = (top, explain_header(at, stage).1);
                 draw_explain(frame, area, header, &ex, stage, &LIBRARY_KEYS, hits);
             }
-            None => draw_map(frame, area, at, hits),
+            None => draw_map(frame, area, at, covered, hits),
         },
-        Library::Map { at } => draw_map(frame, area, at, hits),
+        Library::Map { at } => draw_map(frame, area, at, covered, hits),
     }
 }
 
@@ -73,7 +80,7 @@ fn badges(rest: Span<'static>) -> Line<'static> {
 
 /// Every technique in a column per level, `at` highlighted, and its gist.
 /// Each name is a click target that opens its lesson.
-fn draw_map(frame: &mut Frame, area: Rect, at: Technique, hits: &mut Vec<Hit>) {
+fn draw_map(frame: &mut Frame, area: Rect, at: Technique, covered: bool, hits: &mut Vec<Hit>) {
     // The header sits where the lesson screen's does, so it stays put
     // going between the two.
     let (ox, _) = board_origin(area);
@@ -83,6 +90,9 @@ fn draw_map(frame: &mut Frame, area: Rect, at: Technique, hits: &mut Vec<Hit>) {
     );
     let header = Rect::new(ox, layout_top(area), area.right() - ox, 1);
     frame.render_widget(Paragraph::new(badges(rest)), header);
+    if covered {
+        return;
+    }
 
     let (r, inner) = popup(frame, area, MAP_W, MAP_H, "Techniques library");
     push_hit(hits, r, None);
@@ -164,7 +174,7 @@ fn draw_map(frame: &mut Frame, area: Rect, at: Technique, hits: &mut Vec<Hit>) {
 
 #[cfg(test)]
 mod tests {
-    use crate::app::{Action, App};
+    use crate::app::{Action, App, Overlay};
     use crate::deal::Difficulty;
     use crate::library::Library;
     use crate::logic::Technique;
@@ -203,6 +213,22 @@ mod tests {
         assert!(screen.contains("Esc back to the menu"), "{screen}");
         assert!(screen.contains("LIBRARY"));
         assert!(!screen.contains("New game"), "the title menu is gone");
+    }
+
+    #[test]
+    fn help_over_the_map_hides_the_map() {
+        // Like the title menu: a popup under Help would only peek out.
+        let mut app = reading(Library::Map {
+            at: Technique::Skyscraper,
+        });
+        app.overlays.push(Overlay::Help);
+        let (lines, hits) = draw(&app, MIN_W, MIN_H);
+        let screen = text(&lines);
+        assert!(screen.contains("How to play"), "{screen}");
+        assert!(!screen.contains("Techniques library"), "{screen}");
+        assert!(!screen.contains("Skyscraper"), "{screen}");
+        let opens = |h: &&crate::ui::Hit| matches!(h.action, Some(Action::LibraryOpen(_)));
+        assert!(!hits.iter().any(|h| opens(&h)));
     }
 
     #[test]

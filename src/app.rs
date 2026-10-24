@@ -606,10 +606,12 @@ impl App {
                 at: library::map_move(at, dr, dc),
             }),
             (Some(Map { .. }), Action::LibraryOpen(at)) => Some(Lesson { at, stage: 0 }),
-            (Some(Lesson { at, .. }), Action::LibraryTurn(delta)) => Some(Lesson {
-                at: library::turn(at, delta),
-                stage: 0,
-            }),
+            // Past the first or last technique, nothing moves.
+            (Some(Lesson { at, stage }), Action::LibraryTurn(delta)) => {
+                let next = library::turn(at, delta);
+                let stage = if next == at { stage } else { 0 };
+                Some(Lesson { at: next, stage })
+            }
             (Some(Lesson { at, .. }), Action::LibraryBack) => Some(Map { at }),
             (Some(Map { .. }), Action::LibraryBack) => None,
             (library, _) => library,
@@ -1611,5 +1613,22 @@ mod tests {
         key(&mut app, KeyCode::Char('c'));
         assert!(app.game.is_some());
         assert_eq!(app.library, None);
+    }
+
+    #[test]
+    fn turning_past_either_end_keeps_your_place() {
+        let mut app = title();
+        app.apply(Action::OpenLibrary);
+        app.apply(Action::LibraryOpen(Technique::FullHouse));
+        key(&mut app, KeyCode::Right);
+        key(&mut app, KeyCode::Up);
+        let at = Technique::FullHouse;
+        assert_eq!(app.library, Some(Library::Lesson { at, stage: 1 }));
+        key(&mut app, KeyCode::Esc);
+        app.apply(Action::LibraryOpen(Technique::DeathBlossom));
+        key(&mut app, KeyCode::Right);
+        key(&mut app, KeyCode::Down);
+        let at = Technique::DeathBlossom;
+        assert_eq!(app.library, Some(Library::Lesson { at, stage: 1 }));
     }
 }
