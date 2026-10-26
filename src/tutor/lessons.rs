@@ -138,7 +138,7 @@ pub fn lesson(t: Technique) -> Lesson {
         Crane => Lesson {
             steps: &[
                 "Find a box and a row or column outside it where a digit fits in only two cells each.",
-                "One end of each shares a line with the other: the link. They can't both be the digit.",
+                "One end of each sits in the same row or column: the link. They can't both be the digit.",
                 "So one of the two far ends is the digit.",
                 "Any cell that sees both far ends can't be it.",
             ],
@@ -147,9 +147,9 @@ pub fn lesson(t: Technique) -> Lesson {
         EmptyRectangle => Lesson {
             steps: &[
                 "In a box, find a digit whose spots all lie in one row and one column of it.",
-                "Find a row or column outside the box where it fits in only two cells, one lined up with that box row or column.",
-                "If that cell is the digit, the box's digit must be in the box's other line.",
-                "If the other end is the digit instead, it sees the cell outside the box where it meets that other line. Either way that cell can't be it.",
+                "Outside the box, find a column where it fits in only two cells, one in that row. (Or a row, with one in that column.)",
+                "If that one is the digit, the box's row can't be, so the box's digit is in its column.",
+                "If the pair's other cell is the digit, it sees the cell where its row meets that column, outside the box. Either way, that cell can't be it.",
             ],
             roles: ("pair", "box"),
         },
@@ -166,7 +166,7 @@ pub fn lesson(t: Technique) -> Lesson {
         Swordfish => Lesson {
             steps: &[
                 "Find three rows where a digit fits in only two or three cells each.",
-                "If those cells all fall in the same three columns, the rows' three digits must take one column each.",
+                "If those cells all fall in the same three columns, each row puts the digit in a different one of them.",
                 "So the rest of those columns can't be the digit.",
                 "It works the same with rows and columns swapped.",
             ],
@@ -187,7 +187,7 @@ pub fn lesson(t: Technique) -> Lesson {
                 "Find two cells that don't see each other, with only the same two digits: the ends.",
                 "Pick one digit, the bridge. Find a house where it fits in just two cells, one seeing each end.",
                 "If an end is the bridge, the house cell it sees isn't, so the other is, and the far end isn't.",
-                "So one end is the other digit: if neither is the bridge, both are.",
+                "Then the far end is the other digit; if neither is the bridge, both are.",
                 "Any cell that sees both ends can't be the other digit.",
             ],
             roles: ("removed digit", "bridge"),
@@ -205,7 +205,7 @@ pub fn lesson(t: Technique) -> Lesson {
             steps: &[
                 "Four rectangle corners in two boxes fit the same two digits. Held only by them, they could swap: two solutions. A puzzle has one.",
                 "Floors fit only them; roofs more. Type 1: three floors, so the roof isn't either digit. Type 2: each roof has one extra digit, the same, so one roof is it; cells seeing both can't be it.",
-                "Type 4: a floor digit fits only in the roofs, in a house they share. So one is it, and neither is the other digit.",
+                "Type 4: in a house both roofs share, one of the two digits fits only in them. So one roof is it; neither is the other.",
             ],
             roles: ("roof", "floor"),
         },
@@ -220,7 +220,7 @@ pub fn lesson(t: Technique) -> Lesson {
         Jellyfish => Lesson {
             steps: &[
                 "Find four rows where a digit fits in only two to four cells each.",
-                "If those cells all fall in the same four columns, the rows' four digits must take one column each.",
+                "If those cells all fall in the same four columns, each row puts the digit in a different one of them.",
                 "So the rest of those columns can't be the digit.",
                 "It works the same with rows and columns swapped.",
             ],
@@ -285,8 +285,8 @@ pub fn lesson(t: Technique) -> Lesson {
         XYChain => Lesson {
             steps: &[
                 "Find cells that fit only two digits, each seeing the next in a path.",
-                "If the first isn't its start digit, it's its other. The next cell must also fit that one, and can't be it, so it's its other. And so on.",
-                "So the last cell is its end digit: one end is true.",
+                "Pick a start digit in the first cell. If it isn't that, it's its other. The next must also fit that, and can't be it: it's its other. And so on.",
+                "So the last is its other: the end digit. One end is true.",
                 "Same digit at both ends: a cell seeing both can't be it. Else, if the end cells see each other, neither can be the other's digit, or both would be false.",
             ],
             roles: ("ends", "chain"),
@@ -302,7 +302,7 @@ pub fn lesson(t: Technique) -> Lesson {
         },
         AlsXz => Lesson {
             steps: &[
-                "ALS: 1-4 cells in one house fitting one more digit than cells. No digit repeats, so if one is ruled out, each other one fills a cell.",
+                "ALS (almost locked set): 1-4 cells in one house, one more digit than cells. No digit repeats, so rule one out and the rest fill them.",
                 "Find two ALSs, no shared cell, and a link digit X both fit: every X in one sees every X in the other. They can't both hold X: at least one lacks it, so holds all its other digits.",
                 "So a digit Z both fit (not X) is in one of them. A cell outside both seeing all their Zs can't be Z.",
             ],
@@ -310,7 +310,7 @@ pub fn lesson(t: Technique) -> Lesson {
         },
         AlsXyWing => Lesson {
             steps: &[
-                "ALS: 1-4 cells in one house fitting one more digit than cells. No digit repeats, so if one is ruled out, each other one fills a cell.",
+                "ALS (almost locked set): 1-4 cells in one house, one more digit than cells. No digit repeats, so rule one out and the rest fill them.",
                 "Find ALSs A, B, C, no shared cells, and links X in A and C, Y (not X) in B and C: every X in A sees every X in C, every Y in B every Y in C.",
                 "C misses one digit at most, so holds X or Y: A lacks X or B lacks Y, and holds its others. So a Z in A and B (not X or Y) is in one. Cells outside seeing all their Zs can't be Z.",
             ],
@@ -326,7 +326,7 @@ pub fn lesson(t: Technique) -> Lesson {
         },
         DeathBlossom => Lesson {
             steps: &[
-                "Stem: a cell fitting 2 or 3 digits. Each stem digit has a petal: an ALS (1-3 cells in one house fitting one more digit than cells) holding it, whose cells fitting it all see the stem. No shared cells.",
+                "Stem: a cell fitting 2 or 3 digits. Each stem digit has a petal: an ALS (almost locked set: 1-3 cells in one house, one more digit than cells) holding it, whose spots for it all see the stem. No shared cells.",
                 "The stem is one digit, so that digit's petal lacks it, and (no digit repeating) holds all its others.",
                 "So a digit Z every petal fits, and the stem doesn't, is in a petal. A cell outside seeing all petal Zs can't be Z.",
             ],
