@@ -22,11 +22,12 @@ use crate::logic::Technique;
 use crate::tutor::examples::example;
 use crate::tutor::lessons::gist;
 
-/// The map's popup: five columns and a frame with a column of padding.
-const MAP_W: u16 = 5 * COL_W + 4;
+/// The map's popup: the indent, five columns but the last one's trailing
+/// gap, and a frame with a column of padding. At 103 it just fits `MIN_W`.
+const MAP_W: u16 = 1 + 5 * COL_W - 2 + 4;
 const MAP_H: u16 = 22;
-/// One level's column: the longest name (16), and room between columns.
-const COL_W: u16 = 19;
+/// One level's column: the longest name (18), and room between columns.
+const COL_W: u16 = 20;
 /// Rows of the map's inside above the first technique: the hint, a blank
 /// line, the level headings and their rules.
 const NAMES_Y: u16 = 4;
@@ -208,6 +209,10 @@ mod tests {
                 .any(|h| h.action == Some(Action::LibraryOpen(t)));
             assert!(opens, "{t:?}");
         }
+        assert!(
+            screen.contains("Unique Rectangle 1  Finned Swordfish"),
+            "the longest names keep a gap: {screen}"
+        );
         let line = format!("Skyscraper  {}", gist(Technique::Skyscraper));
         assert!(screen.contains(&line), "{screen}");
         assert!(screen.contains("Esc back to the menu"), "{screen}");

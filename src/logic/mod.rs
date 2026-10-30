@@ -453,10 +453,9 @@ impl Grid {
             WWing => self.w_wing(),
             FinnedXWing => self.finned_fish(2, t),
             SimpleColouring => self.colouring(),
-            UniqueRectangle1 => self.unique_rectangle(t),
-            UniqueRectangle2 => self.unique_rectangle(t),
-            UniqueRectangle3 => self.unique_rectangle(t),
-            UniqueRectangle4 => self.unique_rectangle(t),
+            UniqueRectangle1 | UniqueRectangle2 | UniqueRectangle3 | UniqueRectangle4 => {
+                self.unique_rectangle(t)
+            }
             BugPlusOne => self.bug_plus_one(),
             Jellyfish => self.fish(4, t),
             FinnedSwordfish => self.finned_fish(3, t),
@@ -786,6 +785,10 @@ mod tests {
             (
                 Technique::UniqueRectangle4,
                 "056000003200040008401000009084006302030090000100870000000000105019008000000250000",
+            ),
+            (
+                Technique::Swordfish,
+                "500030000000067001000000872070800000002006010006004009020000700000000040004971003",
             ),
         ] {
             let p = parse_board(puzzle).unwrap();

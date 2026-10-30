@@ -22,13 +22,13 @@ are blank. A built-in human-style solver works each puzzle with the
 techniques people use, easiest first, and a level is defined by the
 hardest one the puzzle needs:
 
-| Level  | Strategies it can need                                                          | Clues  |
-| ------ | ------------------------------------------------------------------------------- | ------ |
-| Easy   | full house, naked & hidden singles                                              | ~31    |
-| Medium | pointing, claiming, naked & hidden pairs and triples                            | ~22-27 |
-| Hard   | quads, X-Wing, Skyscraper, 2-String Kite, Crane, Empty Rectangle, XY-Wing       | ~22-27 |
-| Master | Swordfish, Jellyfish, finned fish, XYZ/W/WXYZ-Wing, Remote Pair, Simple Colouring, Unique Rectangle, BUG+1 | ~22-27 |
-| Zen    | X-Chain, XY-Chain, AIC, ALS-XZ, ALS-XY-Wing, Sue de Coq, Death Blossom          | ~22-27 |
+| Level  | Strategies it can need                                                                       | Clues  |
+| ------ | -------------------------------------------------------------------------------------------- | ------ |
+| Easy   | full house, naked & hidden singles                                                           | ~31    |
+| Medium | pointing, claiming, naked & hidden pairs and triples                                         | ~22-27 |
+| Hard   | quads, X-Wing, Skyscraper, 2-String Kite, Crane, Empty Rectangle, XY-Wing, Unique Rectangles | ~22-27 |
+| Master | Swordfish, Jellyfish, finned fish, XYZ/W/WXYZ-Wing, Remote Pair, Simple Colouring, BUG+1     | ~22-27 |
+| Zen    | X-Chain, XY-Chain, AIC, ALS-XZ, ALS-XY-Wing, Sue de Coq, Death Blossom                       | ~22-27 |
 
 Every puzzle has exactly one solution (cells are removed from a random
 complete grid only while a solver confirms uniqueness) and can be finished
@@ -80,16 +80,16 @@ puzzle you asked it about can't set a best time.
 
 ### Strategies
 
-The tutor knows 36 strategies, easiest first within each level:
+The tutor knows 39 strategies, easiest first within each level:
 
 - **Easy:** full house, naked single, hidden single
 - **Medium:** pointing, claiming, naked pair, hidden pair, naked triple,
   hidden triple
 - **Hard:** naked quad, hidden quad, X-Wing, Skyscraper, 2-String Kite,
-  Crane, Empty Rectangle, XY-Wing
+  Crane, Empty Rectangle, XY-Wing, Unique Rectangle types 1, 2, 3 and 4
 - **Master:** Swordfish, XYZ-Wing, W-Wing, finned X-Wing, Remote Pair,
-  Simple Colouring, Unique Rectangle, BUG+1, Jellyfish, finned Swordfish,
-  WXYZ-Wing, finned Jellyfish
+  Simple Colouring, BUG+1, Jellyfish, finned Swordfish, WXYZ-Wing,
+  finned Jellyfish
 - **Zen:** X-Chain, XY-Chain, AIC, ALS-XZ, ALS-XY-Wing, Sue de Coq,
   Death Blossom
 

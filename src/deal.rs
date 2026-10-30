@@ -46,8 +46,8 @@ impl Difficulty {
         match self {
             Difficulty::Easy => "Warm-up: just singles",
             Difficulty::Medium => "Needs notes: pointing & pairs",
-            Difficulty::Hard => "X-Wing, Skyscraper, XY-Wing",
-            Difficulty::Master => "Fish, wings & rectangles",
+            Difficulty::Hard => "X-Wing, XY-Wing & rectangles",
+            Difficulty::Master => "Big fish, wings & colouring",
             Difficulty::Zen => "Chains & sets",
         }
     }

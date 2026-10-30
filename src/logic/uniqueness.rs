@@ -45,26 +45,22 @@ impl Grid {
                 let pair = 1 << x | 1 << y;
                 let floor: Vec<usize> =
                     (0..4).filter(|&k| self.cands[corners[k]] == pair).collect();
-                let step = match floor.len() {
-                    3 if kind == Technique::UniqueRectangle1 => {
-                        self.rectangle_type_1(corners, &floor, pair)
+                let roof: Vec<usize> = (0..4).filter(|k| !floor.contains(k)).collect();
+                // Two corners side by side, not across a diagonal.
+                let side_by_side = floor.len() == 2 && floor[0] ^ floor[1] != 3;
+                let step = match kind {
+                    Technique::UniqueRectangle1 if floor.len() == 3 => {
+                        self.rectangle_type_1(corners, &floor, roof[0], pair)
                     }
-                    // Two corners side by side, not across a diagonal.
-                    2 if floor[0] ^ floor[1] != 3 => {
-                        let roof: Vec<usize> = (0..4).filter(|k| !floor.contains(k)).collect();
-                        match kind {
-                            Technique::UniqueRectangle2 => {
-                                self.rectangle_type_2(corners, &floor, &roof, pair)
-                            }
-                            Technique::UniqueRectangle3 => {
-                                self.rectangle_type_3(corners, &floor, &roof, pair)
-                            }
-                            Technique::UniqueRectangle4 => self
-                                .rectangle_type_4(corners, &floor, &roof, [x, y])
-                                .or_else(|| self.rectangle_type_4(corners, &floor, &roof, [y, x])),
-                            _ => None,
-                        }
+                    Technique::UniqueRectangle2 if side_by_side => {
+                        self.rectangle_type_2(corners, &floor, &roof, pair)
                     }
+                    Technique::UniqueRectangle3 if side_by_side => {
+                        self.rectangle_type_3(corners, &floor, &roof, pair)
+                    }
+                    Technique::UniqueRectangle4 if side_by_side => self
+                        .rectangle_type_4(corners, &floor, &roof, [x, y])
+                        .or_else(|| self.rectangle_type_4(corners, &floor, &roof, [y, x])),
                     _ => None,
                 };
                 if step.is_some() {
@@ -97,10 +93,16 @@ impl Grid {
         }
     }
 
-    /// Three corners are just the pair: the fourth can't be either, or
-    /// all four would be the pair.
-    fn rectangle_type_1(&self, corners: [usize; 4], floor: &[usize], pair: u16) -> Option<Step> {
-        let odd = corners[(0..4).find(|k| !floor.contains(k))?];
+    /// Three corners are just the pair: the fourth, corner `odd`, can't
+    /// be either, or all four would be the pair.
+    fn rectangle_type_1(
+        &self,
+        corners: [usize; 4],
+        floor: &[usize],
+        odd: usize,
+        pair: u16,
+    ) -> Option<Step> {
+        let odd = corners[odd];
         let why = format!(
             "{} are only {}. If {} were {} too, the four cells could swap {} for a \
              second solution, but the puzzle has just one (Unique Rectangle type 1). \
@@ -156,10 +158,10 @@ impl Grid {
         self.eliminating(Technique::UniqueRectangle2, removals, pattern, why)
     }
 
-    /// The roof corners have different extra digits. One of them takes an
-    /// extra, so together they act as one cell fitting those extras. With
-    /// other cells of a shared house that fill as many digits as there
-    /// are cells, those digits are used up there.
+    /// The roof corners fit extra digits. One of them takes an extra, so
+    /// together they act as one cell fitting those extras. With other
+    /// cells of a shared house that fill as many digits as there are
+    /// cells, those digits are used up there.
     fn rectangle_type_3(
         &self,
         corners: [usize; 4],
@@ -169,7 +171,7 @@ impl Grid {
     ) -> Option<Step> {
         let [a, b] = [corners[roof[0]], corners[roof[1]]];
         let (extra_a, extra_b) = (self.cands[a] & !pair, self.cands[b] & !pair);
-        if extra_a == 0 || extra_b == 0 || self.cands[a] & pair != pair {
+        if extra_a == 0 || extra_b == 0 {
             return None;
         }
         let extras = extra_a | extra_b;
@@ -181,29 +183,35 @@ impl Grid {
                 .map(|&c| usize::from(c))
                 .filter(|&c| !corners.contains(&c) && self.values[c] == 0)
                 .collect();
-            for m in 1..=3 {
+            // `m` cells and the roof make m + 1, which can't fill fewer
+            // digits than the extras alone.
+            for m in (1..=3).filter(|&m| extras.count_ones() <= m + 1) {
                 for chosen in subsets((1 << others.len()) - 1, m) {
                     let group: Vec<usize> = bits(chosen).map(|i| others[i]).collect();
                     let digits = group.iter().fold(extras, |u, &c| u | self.cands[c]);
-                    if digits.count_ones() != m + 1 || group.iter().any(|&c| self.cands[c] == 0) {
+                    if digits.count_ones() != m + 1 {
                         continue;
                     }
-                    let removals: Vec<(usize, u16)> = others
+                    let targets: Vec<usize> = others
                         .iter()
-                        .filter(|c| !group.contains(c))
-                        .map(|&c| (c, digits))
+                        .copied()
+                        .filter(|&c| !group.contains(&c) && self.cands[c] & digits != 0)
                         .collect();
+                    if targets.is_empty() {
+                        continue;
+                    }
                     let why = format!(
                         "{} are only {}. If neither of {} and {} were {}, the four cells could \
                          swap {} for a second solution, but the puzzle has just one \
-                         (Unique Rectangle type 3). So one is, and with {} that is {} cells \
-                         fitting only {}. No other cell in {} can be {}.",
+                         (Unique Rectangle type 3). So one of them is {}. As one cell, with \
+                         {} they make {} cells fitting only {}. No other cell in {} can be {}.",
                         cell_list(&floor.iter().map(|&k| corners[k]).collect::<Vec<_>>()),
                         digit_choice(pair),
                         rc(a),
                         rc(b),
                         digit_choice(extras),
                         digit_list(pair),
+                        digit_choice(extras),
                         cell_list(&group),
                         m + 1,
                         digit_list(digits),
@@ -218,11 +226,8 @@ impl Grid {
                         .marks
                         .extend(self.marks(group.iter().copied(), digits, Role::Key));
                     pattern.cells.extend(&group);
-                    if let Some(step) =
-                        self.eliminating(Technique::UniqueRectangle3, removals, pattern, why)
-                    {
-                        return Some(step);
-                    }
+                    let removals = targets.into_iter().map(|c| (c, digits)).collect();
+                    return self.eliminating(Technique::UniqueRectangle3, removals, pattern, why);
                 }
             }
         }
@@ -316,7 +321,7 @@ impl Grid {
 mod tests {
     use crate::logic::testing::{removals, staged};
     use crate::logic::{Effect, Grid, Mark, Role, Technique};
-    use crate::sudoku::idx;
+    use crate::sudoku::{N, idx};
 
     fn marks(cells: &[usize], digits: &[u8], role: Role) -> Vec<Mark> {
         cells
@@ -399,7 +404,73 @@ mod tests {
         let step = grid.unique_rectangle(Technique::UniqueRectangle3);
         let s = step.as_ref().unwrap();
         assert_eq!(s.technique, Technique::UniqueRectangle3);
+        assert_eq!(
+            s.pattern.cells,
+            [idx(0, 0), idx(0, 3), idx(1, 0), idx(1, 3), idx(1, 6)]
+        );
+        assert_eq!(s.pattern.houses, [1]);
+        let mut want = marks(&[idx(0, 0), idx(0, 3)], &[1, 2], Role::Other);
+        want.extend(marks(&[idx(1, 0)], &[5], Role::Key));
+        want.extend(marks(&[idx(1, 3)], &[7], Role::Key));
+        want.extend(marks(&[idx(1, 6)], &[5, 7], Role::Key));
+        assert_eq!(s.pattern.marks, want);
+        assert_eq!(
+            s.why,
+            "r1c1 and r1c4 are only 1 or 2. If neither of r2c1 and r2c4 were 5 or 7, the \
+             four cells could swap 1 and 2 for a second solution, but the puzzle has just \
+             one (Unique Rectangle type 3). So one of them is 5 or 7. As one cell, with \
+             r2c7 they make 2 cells fitting only 5 and 7. No other cell in row 2 can be \
+             5 or 7."
+        );
         assert_eq!(removals(step), [(idx(1, 7), 1 << 5), (idx(1, 8), 1 << 7)]);
+    }
+
+    #[test]
+    fn unique_rectangle_type_3_in_a_box() {
+        // The roof (r4c1, r4c2) shares box 4 as well as row 4. Row 4 has
+        // nothing else open, but in box 4 r5c3 is {5,7}: r6c3 can't be 5.
+        let grid = staged(&[
+            (idx(0, 0), &[1, 2]),
+            (idx(0, 1), &[1, 2]),
+            (idx(3, 0), &[1, 2, 5]),
+            (idx(3, 1), &[1, 2, 7]),
+            (idx(4, 2), &[5, 7]),
+            (idx(5, 2), &[5, 9]),
+        ]);
+        let step = grid.unique_rectangle(Technique::UniqueRectangle3);
+        let s = step.as_ref().unwrap();
+        assert_eq!(s.pattern.houses, [2 * N + 3]);
+        assert!(
+            s.why.ends_with("No other cell in box 4 can be 5 or 7."),
+            "{}",
+            s.why
+        );
+        assert_eq!(removals(step), [(idx(5, 2), 1 << 5)]);
+    }
+
+    #[test]
+    fn unique_rectangle_type_3_with_a_triple() {
+        // No one cell joins the roof's 5 and 7, but r2c7 {5,8} and r2c8
+        // {7,8} do: with the roof, three cells for 5, 7 and 8.
+        let grid = staged(&[
+            (idx(0, 0), &[1, 2]),
+            (idx(0, 3), &[1, 2]),
+            (idx(1, 0), &[1, 2, 5]),
+            (idx(1, 3), &[1, 2, 7]),
+            (idx(1, 5), &[5, 9]),
+            (idx(1, 6), &[5, 8]),
+            (idx(1, 7), &[7, 8]),
+            (idx(1, 8), &[8, 9]),
+        ]);
+        let step = grid.unique_rectangle(Technique::UniqueRectangle3);
+        let s = step.as_ref().unwrap();
+        assert!(
+            s.why
+                .contains("with r2c7 and r2c8 they make 3 cells fitting only 5, 7 and 8"),
+            "{}",
+            s.why
+        );
+        assert_eq!(removals(step), [(idx(1, 5), 1 << 5), (idx(1, 8), 1 << 8)]);
     }
 
     #[test]

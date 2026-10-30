@@ -221,12 +221,12 @@ pub fn lesson(t: Technique) -> Lesson {
         },
         UniqueRectangle3 => Lesson {
             steps: &[
-                "Four cells at a rectangle's corners, in two boxes, fit the same two digits.",
-                "Two side by side fit only those: the floor. The other two, the roof, also fit different extras.",
-                "With no extra, the four could swap: two solutions. A puzzle has one. So a roof cell is an extra.",
-                "Count the roof as one cell. In a house with both, if n cells fit only n digits, nothing else there is one.",
+                "Find four cells at a rectangle's corners, in two boxes, all fitting the same two digits.",
+                "Two side by side fit only those two: the floor. The other two, the roof, fit extras too.",
+                "With no extra in the roof, the four could swap: two solutions. So a roof cell holds an extra.",
+                "Count the roof as one cell fitting its extras. In a house with both, if n cells fit only n digits, no other cell there fits them.",
             ],
-            roles: ("extra digits", "floor"),
+            roles: ("the n digits", "floor"),
         },
         UniqueRectangle4 => Lesson {
             steps: &[
