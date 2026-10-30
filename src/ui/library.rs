@@ -197,7 +197,7 @@ mod tests {
         });
         let (lines, hits) = draw(&app, MIN_W, MIN_H);
         let screen = text(&lines);
-        for (d, n) in Difficulty::ALL.iter().zip([3, 6, 8, 12, 7]) {
+        for (d, n) in Difficulty::ALL.iter().zip([3, 6, 12, 11, 7]) {
             let heading = format!("{} {n}", d.name().to_uppercase());
             assert!(screen.contains(&heading), "{screen}");
         }
@@ -272,7 +272,7 @@ mod tests {
         let (lines, hits) = draw(&app, MIN_W, MIN_H);
         let screen = text(&lines);
         assert!(
-            lines[0].contains(" LIBRARY   Hard · 13 of 36"),
+            lines[0].contains(" LIBRARY   Hard · 13 of 39"),
             "{}",
             lines[0]
         );

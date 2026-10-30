@@ -64,7 +64,7 @@ mod tests {
     #[test]
     fn columns_hold_every_technique_once_by_level() {
         let counts: Vec<usize> = Difficulty::ALL.iter().map(|&d| column(d).len()).collect();
-        assert_eq!(counts, [3, 6, 8, 12, 7]);
+        assert_eq!(counts, [3, 6, 12, 11, 7]);
         let all: Vec<Technique> = Difficulty::ALL.iter().flat_map(|&d| column(d)).collect();
         assert_eq!(all, Technique::ALL);
         assert_eq!(column(Difficulty::Hard)[3], Skyscraper);
@@ -74,7 +74,11 @@ mod tests {
     fn up_and_down_stay_in_the_column_and_stop_at_its_ends() {
         assert_eq!(map_move(Skyscraper, 1, 0), TwoStringKite);
         assert_eq!(map_move(Skyscraper, -1, 0), XWing);
-        assert_eq!(map_move(XYWing, 1, 0), XYWing, "no falling into Master");
+        assert_eq!(
+            map_move(UniqueRectangle4, 1, 0),
+            UniqueRectangle4,
+            "no falling into Master"
+        );
         assert_eq!(
             map_move(NakedQuad, -1, 0),
             NakedQuad,
@@ -87,8 +91,8 @@ mod tests {
     fn left_and_right_keep_the_row_or_take_the_last() {
         assert_eq!(map_move(Skyscraper, 0, -1), HiddenPair, "row 4 to row 4");
         assert_eq!(map_move(Skyscraper, 0, 1), FinnedXWing);
-        // Master's row 12 to Hard, which has 8.
-        assert_eq!(map_move(FinnedJellyfish, 0, -1), XYWing);
+        // Master's row 11 to Hard, which has 12.
+        assert_eq!(map_move(FinnedJellyfish, 0, -1), UniqueRectangle3);
         assert_eq!(map_move(XYWing, 0, -1), HiddenTriple, "Medium has 6");
         assert_eq!(
             map_move(HiddenSingle, 0, -1),
@@ -101,8 +105,9 @@ mod tests {
     #[test]
     fn turning_runs_through_all_in_order_and_stops_at_the_ends() {
         assert_eq!(turn(EmptyRectangle, 1), XYWing);
-        assert_eq!(turn(XYWing, 1), Swordfish, "crosses into Master");
-        assert_eq!(turn(Swordfish, -1), XYWing);
+        assert_eq!(turn(XYWing, 1), UniqueRectangle1);
+        assert_eq!(turn(UniqueRectangle4, 1), Swordfish, "crosses into Master");
+        assert_eq!(turn(Swordfish, -1), UniqueRectangle4);
         assert_eq!(turn(FullHouse, -1), FullHouse);
         assert_eq!(turn(DeathBlossom, 1), DeathBlossom);
     }
@@ -111,6 +116,6 @@ mod tests {
     fn places_count_from_one() {
         assert_eq!(place(FullHouse), 1);
         assert_eq!(place(Skyscraper), 13);
-        assert_eq!(place(DeathBlossom), 36);
+        assert_eq!(place(DeathBlossom), 39);
     }
 }

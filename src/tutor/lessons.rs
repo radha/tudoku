@@ -201,11 +201,39 @@ pub fn lesson(t: Technique) -> Lesson {
             ],
             roles: ("colour A", "colour B"),
         },
-        UniqueRectangle => Lesson {
+        UniqueRectangle1 => Lesson {
             steps: &[
-                "Four rectangle corners in two boxes fit the same two digits. Held only by them, they could swap: two solutions. A puzzle has one.",
-                "Floors fit only them; roofs more. Type 1: three floors, so the roof isn't either digit. Type 2: each roof has one extra digit, the same, so one roof is it; cells seeing both can't be it.",
-                "Type 4: in a house both roofs share, one of the two digits fits only in them. So one roof is it; neither is the other.",
+                "Find four cells at a rectangle's corners, in exactly two boxes.",
+                "Three of them fit only the same two digits. They are the floor.",
+                "If the fourth fit one of those digits too, the four could swap them: two solutions. A puzzle has one.",
+                "So the fourth cell isn't either digit.",
+            ],
+            roles: ("", "floor"),
+        },
+        UniqueRectangle2 => Lesson {
+            steps: &[
+                "Find four cells at a rectangle's corners, in two boxes, all fitting the same two digits.",
+                "Two side by side fit only those two. They are the floor. The other two, the roof, each fit one extra digit, the same one.",
+                "If neither roof cell were the extra digit, the four could swap the two digits: two solutions. A puzzle has one.",
+                "So one roof cell is the extra digit. Any cell seeing both can't be it.",
+            ],
+            roles: ("roof", "floor"),
+        },
+        UniqueRectangle3 => Lesson {
+            steps: &[
+                "Four cells at a rectangle's corners, in two boxes, fit the same two digits.",
+                "Two side by side fit only those: the floor. The other two, the roof, also fit different extras.",
+                "With no extra, the four could swap: two solutions. A puzzle has one. So a roof cell is an extra.",
+                "Count the roof as one cell. In a house with both, if n cells fit only n digits, nothing else there is one.",
+            ],
+            roles: ("extra digits", "floor"),
+        },
+        UniqueRectangle4 => Lesson {
+            steps: &[
+                "Find four cells at a rectangle's corners, in two boxes, all fitting the same two digits.",
+                "Two side by side fit only those two. They are the floor. The other two are the roof.",
+                "In a row, column or box with both roof cells, one of the two digits fits only in them. So one of them is it.",
+                "If a roof cell were the other digit, the four could swap: two solutions. So neither is.",
             ],
             roles: ("roof", "floor"),
         },
@@ -364,7 +392,10 @@ pub fn gist(t: Technique) -> &'static str {
         FinnedXWing => "an X-Wing on two rows or columns, plus fins in one box",
         RemotePair => "cells fitting the same two digits, coloured A and B",
         SimpleColouring => "one digit's pairs chained and coloured A and B",
-        UniqueRectangle => "four corners that could swap would mean two solutions",
+        UniqueRectangle1 => "three corners fit one pair, so the fourth can't",
+        UniqueRectangle2 => "two corners fit one pair, the other two share an extra",
+        UniqueRectangle3 => "two corners fit one pair, the other two add spare digits",
+        UniqueRectangle4 => "two corners fit one pair, the other two lose a digit",
         BugPlusOne => "every empty cell fits two digits but one fits three",
         Jellyfish => "an X-Wing on four rows and four columns",
         FinnedSwordfish => "a Swordfish on three rows or columns, plus fins in one box",

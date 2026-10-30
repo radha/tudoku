@@ -1577,7 +1577,7 @@ mod tests {
         assert_eq!(app.library, Some(Library::Lesson { at, stage: 0 }));
         key(&mut app, KeyCode::Char('j'));
         key(&mut app, KeyCode::Esc);
-        let at = Technique::Swordfish;
+        let at = Technique::UniqueRectangle1;
         assert_eq!(app.library, Some(Library::Map { at }));
     }
 
