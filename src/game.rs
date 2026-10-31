@@ -12,7 +12,8 @@ use crate::sudoku::{
 };
 use crate::tutor::NoteMode;
 
-/// Snapshot of one cell (plus auto-removed peer notes) for undo.
+/// Snapshot of one cell (plus auto-removed peer notes) for undo, or for
+/// redo after an undo.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct UndoEntry {
     cell: usize,
@@ -56,6 +57,8 @@ pub struct SavedGame {
     tutor_used: u32,
     elapsed_ms: u64,
     undo: Vec<UndoEntry>,
+    #[serde(default)]
+    redo: Vec<UndoEntry>,
 }
 
 const SAVE_VERSION: u32 = 2;
@@ -76,6 +79,8 @@ pub struct Game {
     pub tutor_used: u32,
     pub completed: bool,
     undo: Vec<UndoEntry>,
+    /// Edits undone, latest last, until a new edit drops them.
+    redo: Vec<UndoEntry>,
     started: Instant,
     banked: Duration,
     pub paused: bool,
@@ -100,6 +105,7 @@ impl Game {
             tutor_used: 0,
             completed: false,
             undo: Vec::new(),
+            redo: Vec::new(),
             started: Instant::now(),
             banked: Duration::ZERO,
             paused: false,
@@ -146,11 +152,12 @@ impl Game {
         }
     }
 
-    pub fn toggle_notes_mode(&mut self) {
+    pub fn toggle_notes_mode(&mut self) -> bool {
         if self.completed {
-            return;
+            return false;
         }
         self.notes_mode = !self.notes_mode;
+        true
     }
 
     pub fn elapsed(&self) -> Duration {
@@ -195,7 +202,11 @@ impl Game {
         cleared
     }
 
+    /// Remember cell `i` (and the peer notes about to change) before an
+    /// edit. A new edit takes the board somewhere else: what was undone
+    /// can't be redone any more.
     fn push_undo(&mut self, i: usize, peer_notes: Vec<(usize, u16)>) {
+        self.redo.clear();
         self.undo.push(UndoEntry {
             cell: i,
             prev_value: self.values[i],
@@ -204,29 +215,30 @@ impl Game {
         });
     }
 
-    /// Enter a digit: place the value, or toggle a pencil mark in notes mode.
-    pub fn enter_digit(&mut self, digit: u8) {
+    /// Enter a digit: place the value, or toggle a pencil mark in notes
+    /// mode. True when the board changed.
+    pub fn enter_digit(&mut self, digit: u8) -> bool {
         if self.completed || self.paused {
-            return;
+            return false;
         }
         debug_assert!((1..=9).contains(&digit));
         self.pinned = digit;
         let i = self.selected_idx();
         if self.values[i] == digit {
-            return; // already showing this digit: just pins it
+            return false; // already showing this digit: just pins it
         }
         if self.given[i] {
             self.say("Locked cell");
-            return;
+            return false;
         }
         if self.notes_mode {
             if self.values[i] != 0 {
                 self.say("Clear the value first (Eraser)");
-                return;
+                return false;
             }
             self.push_undo(i, Vec::new());
             self.notes[i] ^= 1 << digit;
-            return;
+            return true;
         }
         // Auto-clean peer notes when a correct digit is placed.
         let correct = self.solution[i] == digit;
@@ -245,42 +257,106 @@ impl Game {
             self.say("Not quite — that digit is wrong");
         }
         self.mark_finished_if_done();
+        true
     }
 
-    /// Clear the selected cell (value + notes) unless it is a given.
-    pub fn erase(&mut self) {
+    /// Clear the selected cell (value + notes) unless it is a given. True
+    /// when there was something to clear.
+    pub fn erase(&mut self) -> bool {
         if self.completed || self.paused {
-            return;
+            return false;
         }
         let i = self.selected_idx();
         if self.given[i] {
             self.say("Locked cell");
-            return;
+            return false;
         }
         if self.values[i] == 0 && self.notes[i] == 0 {
-            return;
+            return false;
         }
         self.push_undo(i, Vec::new());
         self.values[i] = 0;
         self.notes[i] = 0;
+        true
     }
 
-    /// Step back one edit. A solved puzzle stays solved.
-    pub fn undo(&mut self) {
-        if self.paused || self.completed {
-            return;
-        }
-        let Some(e) = self.undo.pop() else {
-            self.say("Nothing to undo");
-            return;
+    /// Put back the cells `e` remembers, and return an entry remembering
+    /// them as they were just now, to step the other way.
+    fn revert(&mut self, e: UndoEntry) -> UndoEntry {
+        let back = UndoEntry {
+            cell: e.cell,
+            prev_value: self.values[e.cell],
+            prev_notes: self.notes[e.cell],
+            peer_notes: e
+                .peer_notes
+                .iter()
+                .map(|&(p, _)| (p, self.notes[p]))
+                .collect(),
         };
         for (p, prev) in e.peer_notes {
             self.notes[p] = prev;
         }
         self.values[e.cell] = e.prev_value;
         self.notes[e.cell] = e.prev_notes;
-        // Do not restore mistakes: the counter is cumulative.
         self.select_cell(e.cell);
+        back
+    }
+
+    /// Step back one edit. A solved puzzle stays solved. Mistakes stay
+    /// counted: the counter is cumulative.
+    pub fn undo(&mut self) -> bool {
+        if self.paused || self.completed {
+            return false;
+        }
+        let Some(e) = self.undo.pop() else {
+            self.say("Nothing to undo");
+            return false;
+        };
+        let back = self.revert(e);
+        self.redo.push(back);
+        true
+    }
+
+    /// Step forward again over the last undo. A wrong digit redone isn't
+    /// counted twice. Redo never solves the puzzle: it only goes back to
+    /// boards that were undone, and a solved one can't be.
+    pub fn redo(&mut self) -> bool {
+        if self.paused || self.completed {
+            return false;
+        }
+        let Some(e) = self.redo.pop() else {
+            self.say("Nothing to redo");
+            return false;
+        };
+        let back = self.revert(e);
+        self.undo.push(back);
+        true
+    }
+
+    /// Clear every digit and note you put in, back to the givens. The
+    /// clock, the mistakes and the tutor count carry on; the undo history
+    /// goes, since there's nothing left to step back through. True when
+    /// there was anything to clear.
+    pub fn restart(&mut self) -> bool {
+        if self.paused || self.completed || !self.has_progress() {
+            return false;
+        }
+        for i in (0..CELLS).filter(|&i| !self.given[i]) {
+            self.values[i] = 0;
+            self.notes[i] = 0;
+        }
+        self.undo.clear();
+        self.redo.clear();
+        self.pinned = 0;
+        true
+    }
+
+    /// Whether anything has been put on the board: a digit, a note, or an
+    /// edit since undone. A game without any is no loss to drop.
+    pub fn has_progress(&self) -> bool {
+        !self.undo.is_empty()
+            || !self.redo.is_empty()
+            || (0..CELLS).any(|i| !self.given[i] && (self.values[i] != 0 || self.notes[i] != 0))
     }
 
     /// Count one opening of the tutor.
@@ -399,6 +475,7 @@ impl Game {
             tutor_used: self.tutor_used,
             elapsed_ms: u64::try_from(self.elapsed().as_millis()).unwrap_or(u64::MAX),
             undo: self.undo.clone(),
+            redo: self.redo.clone(),
         }
     }
 
@@ -426,7 +503,7 @@ impl Game {
             && s.notes.iter().all(|&m| m & !ALL_DIGITS == 0)
             && s.selected.0 < 9
             && s.selected.1 < 9
-            && s.undo.iter().all(|e| e.fits(&puzzle));
+            && s.undo.iter().chain(&s.redo).all(|e| e.fits(&puzzle));
         if !consistent {
             return Err("inconsistent save".to_string());
         }
@@ -440,6 +517,7 @@ impl Game {
         game.banked = Duration::from_millis(s.elapsed_ms);
         game.paused = true;
         game.undo = s.undo;
+        game.redo = s.redo;
         Ok(game)
     }
 }
@@ -655,6 +733,54 @@ mod tests {
         assert_eq!(g.notes[idx(0, 2)], 1 << 3);
         g.undo();
         assert_eq!(g.notes[idx(0, 2)], 0);
+    }
+
+    #[test]
+    fn redo_steps_forward_again_until_a_new_edit() {
+        let mut g = test_game();
+        // (0,2) is 4: placing it clears the 4 noted in (0,3).
+        g.toggle_notes_mode();
+        g.set_selected(0, 3);
+        g.enter_digit(4);
+        g.toggle_notes_mode();
+        g.set_selected(0, 2);
+        g.enter_digit(4);
+        g.set_selected(0, 3);
+        g.enter_digit(9); // wrong
+        assert_eq!(g.mistakes, 1);
+        let after = (g.values, g.notes);
+        assert!(g.undo() && g.undo());
+        assert_eq!(g.notes[idx(0, 3)], 1 << 4, "the cleared note is back");
+        assert!(g.redo() && g.redo());
+        assert_eq!((g.values, g.notes), after);
+        assert_eq!(g.mistakes, 1, "a redone wrong digit isn't counted again");
+        assert!(!g.redo());
+        assert_eq!(g.message(Duration::from_secs(5)), Some("Nothing to redo"));
+        g.undo();
+        g.set_selected(1, 1);
+        g.enter_digit(7); // a new edit
+        assert!(!g.redo(), "a new edit drops what was undone");
+    }
+
+    #[test]
+    fn restart_clears_your_entries_and_keeps_the_rest() {
+        let mut g = test_game();
+        assert!(!g.has_progress());
+        assert!(!g.restart(), "nothing to clear");
+        g.set_selected(0, 2);
+        g.enter_digit(9); // wrong
+        g.toggle_notes_mode();
+        g.set_selected(0, 3);
+        g.enter_digit(6);
+        g.use_tutor();
+        assert!(g.has_progress());
+        assert!(g.restart());
+        let (puzzle, _) = test_board();
+        assert_eq!(g.values, puzzle);
+        assert!(g.notes.iter().all(|&m| m == 0));
+        assert_eq!((g.mistakes, g.tutor_used), (1, 1), "carried on");
+        assert!(!g.undo() && !g.redo(), "no history left");
+        assert!(!g.has_progress());
     }
 
     #[test]

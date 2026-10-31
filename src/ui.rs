@@ -12,7 +12,7 @@ use ratatui::{
 
 use std::time::Duration;
 
-use crate::app::{Action, App, BoardAction, MenuRow, Overlay, TutorStage};
+use crate::app::{Action, App, Ask, BoardAction, MenuRow, Overlay, TutorStage};
 use crate::deal::Difficulty;
 use crate::game::Game;
 use crate::sudoku::{box_of, idx};
@@ -36,7 +36,7 @@ const POPUP_BG: Color = Color::Rgb(27, 31, 45);
 const PEER_BG: Color = Color::Rgb(33, 39, 57);
 const SAME_BG: Color = Color::Rgb(39, 58, 104);
 const ERR_BG: Color = Color::Rgb(74, 27, 38);
-const SEL_BG: Color = Color::Rgb(56, 108, 240);
+const SEL_BG: Color = Color::Rgb(40, 84, 196);
 
 // Lines.
 const GRID_THIN: Color = Color::Rgb(46, 53, 72);
@@ -47,11 +47,15 @@ const GRID_BOX: Color = Color::Rgb(128, 140, 170);
 const INK: Color = Color::Rgb(236, 239, 245);
 const BRIGHT: Color = Color::Rgb(255, 255, 255);
 const MUTED: Color = Color::Rgb(142, 152, 178);
-// Notes sit well below the placed digits, so the two never read alike.
-const NOTE: Color = Color::Rgb(104, 114, 142);
+// Notes sit well below the placed digits, so the two never read alike,
+// but stay readable (4.3:1) on the selected cell's row, column and box.
+const NOTE: Color = Color::Rgb(128, 138, 168);
 // ...but the selected cell's bright fill would swallow that gray.
-const NOTE_SEL: Color = Color::Rgb(190, 208, 250);
+const NOTE_SEL: Color = Color::Rgb(200, 216, 252);
 const PEN: Color = Color::Rgb(255, 196, 92);
+// Your digit on the selected cell: still amber, so a given and your own
+// digit look different under the cursor too.
+const PEN_SEL: Color = Color::Rgb(255, 214, 140);
 const ACCENT: Color = Color::Rgb(64, 216, 240);
 const GREEN: Color = Color::Rgb(84, 222, 150);
 const RED: Color = Color::Rgb(255, 112, 112);
@@ -278,14 +282,12 @@ fn draw_board(
             let ym = y + CELL_H / 2;
             let v = game.values[i];
             if v != 0 {
-                let fg = if is_sel {
-                    BRIGHT
-                } else if err {
-                    RED
-                } else if game.given[i] {
-                    INK
-                } else {
-                    PEN
+                let fg = match (is_sel, err, game.given[i]) {
+                    (true, false, false) => PEN_SEL,
+                    (true, ..) => BRIGHT,
+                    (false, true, _) => RED,
+                    (false, false, true) => INK,
+                    (false, false, false) => PEN,
                 };
                 // Fullwidth digits fill two columns, so they draw a size up
                 // from the one-column pencil marks.
@@ -516,6 +518,17 @@ fn popup_block(title: &str) -> Block<'static> {
 fn popup(frame: &mut Frame, area: Rect, w: u16, h: u16, title: &str) -> (Rect, Rect) {
     let r = centered_rect(area, w, h);
     frame.render_widget(Clear, r);
+    // A two-column glyph (a board digit) just left of the popup would
+    // run on under its border, so it goes too.
+    if r.x > area.x {
+        let buf = frame.buffer_mut();
+        for y in r.top()..r.bottom() {
+            let cell = &mut buf[(r.x - 1, y)];
+            if Span::raw(cell.symbol()).width() > 1 {
+                cell.set_symbol(" ");
+            }
+        }
+    }
     let block = popup_block(title);
     let inner = block.inner(r).inner(Margin::new(1, 0));
     frame.render_widget(block, r);
@@ -525,8 +538,9 @@ fn popup(frame: &mut Frame, area: Rect, w: u16, h: u16, title: &str) -> (Rect, R
 /// Text width of one level-menu row.
 const MENU_TEXT_W: usize = 60;
 
-/// What the title menu's Library row says it is.
+/// What the title menu's Library and Stats rows say they are.
 const LIBRARY_BLURB: &str = "Every strategy, with a worked example";
+const STATS_BLURB: &str = "Best and average times, streaks";
 
 /// A level menu's height: its rows, the hint and footer around them, and
 /// the rule over the Library row if it has one.
@@ -557,14 +571,10 @@ fn draw_levels_menu(
         menu_height(rows),
         title,
     );
-    let last_key = if rows.contains(&MenuRow::Library) {
-        6
-    } else {
-        5
-    };
+    let last_key = if rows.contains(&MenuRow::Stats) { 7 } else { 5 };
     let mut lines: Vec<Line> = vec![
         Line::styled(
-            format!(" arrows/hjkl + Enter, keys 1-{last_key}, or click"),
+            format!(" ↑↓/jk + Enter, keys 1-{last_key}, or click"),
             Style::default().fg(MUTED),
         ),
         Line::from(""),
@@ -602,6 +612,10 @@ fn draw_levels_menu(
                 let text = format!(" {marker} 6. Library {LIBRARY_BLURB}");
                 (text, Action::OpenLibrary)
             }
+            MenuRow::Stats => {
+                let text = format!(" {marker} 7. Stats   {STATS_BLURB}");
+                (text, Action::OpenStats)
+            }
         };
         lines.push(Line::styled(
             format!("{text:<MENU_TEXT_W$}"),
@@ -625,15 +639,18 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         ("Fill", "1-9  (click a cell, then a number)"),
         ("Notes", "n toggles pencil marks, then 1-9"),
         ("Erase", "0 / x / e / Backspace / Delete"),
-        ("Undo", "u  or Ctrl+Z"),
+        ("Undo", "u  or Ctrl+Z   •   redo: r  or Ctrl+R"),
         ("Tutor", "t names a strategy; t again explains it;"),
         ("", "t once more shows it on your board"),
         ("", "a does it for me  •  Esc closes the tutor"),
         ("Learn", "6 on the title menu: the techniques library"),
         ("New", "N (capital) — fresh puzzle, same level"),
+        ("", "R (capital) — clear the board, start over"),
         ("Level", "d — change difficulty"),
         ("Pause", "p, or switch windows — stops the clock"),
+        ("Menu", "m — the title menu; your game waits there"),
         ("Saves", "automatic — Continue from the title screen"),
+        ("Solved", "w brings the result back after Esc"),
         ("Quit", "q    •    close popups: Esc"),
         ("Mouse", "click cells, the number pad, buttons"),
     ];
@@ -678,6 +695,28 @@ fn draw_paused(frame: &mut Frame, area: Rect) {
     );
 }
 
+/// Two buttons side by side along the bottom of popup `r`; returns where
+/// they are.
+fn popup_buttons(frame: &mut Frame, r: Rect, labels: [Line<'static>; 2]) -> [Rect; 2] {
+    const W: u16 = 12;
+    let y = r.y + r.height - 4;
+    let x = r.x + (r.width.saturating_sub(W * 2 + 2)) / 2;
+    let rects = [Rect::new(x, y, W, 3), Rect::new(x + W + 2, y, W, 3)];
+    for (label, rect) in labels.into_iter().zip(rects) {
+        let button = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(LINE));
+        frame.render_widget(
+            Paragraph::new(label)
+                .alignment(Alignment::Center)
+                .block(button),
+            rect,
+        );
+    }
+    rects
+}
+
 /// Returns the popup's frame and its two buttons.
 fn draw_won(frame: &mut Frame, area: Rect, game: &Game, app: &App) -> (Rect, Rect, Rect) {
     let (r, inner) = popup(frame, area, 48, 13, "Solved!");
@@ -713,39 +752,111 @@ fn draw_won(frame: &mut Frame, area: Rect, game: &Game, app: &App) -> (Rect, Rec
         record,
         Line::from(""),
         Line::styled(
-            "Enter new · d levels · Esc view board",
+            "Enter new · d levels · m menu · Esc board",
             Style::default().fg(MUTED),
         ),
     ];
     frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center), inner);
-    // Clickable footer buttons.
-    let bw = 12u16;
-    let by = r.y + r.height - 4;
-    let bx = r.x + (r.width.saturating_sub(bw * 2 + 2)) / 2;
-    let new_btn = Rect::new(bx, by, bw, 3);
-    let levels_btn = Rect::new(bx + bw + 2, by, bw, 3);
-    let button = || {
-        Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(LINE))
-    };
-    frame.render_widget(
-        Paragraph::new(Line::styled(
-            " ↻ New ",
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-        ))
-        .alignment(Alignment::Center)
-        .block(button()),
-        new_btn,
-    );
-    frame.render_widget(
-        Paragraph::new(Line::styled(" ◈ Levels ", Style::default().fg(INK)))
-            .alignment(Alignment::Center)
-            .block(button()),
-        levels_btn,
+    let [new_btn, levels_btn] = popup_buttons(
+        frame,
+        r,
+        [
+            Line::styled(
+                " ↻ New ",
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
+            Line::styled(" ◈ Levels ", Style::default().fg(INK)),
+        ],
     );
     (r, new_btn, levels_btn)
+}
+
+/// "Are you sure?" Returns the popup's frame and its yes and no buttons.
+fn draw_confirm(frame: &mut Frame, area: Rect, app: &App, ask: Ask) -> (Rect, Rect, Rect) {
+    let (title, question, cost) = match ask {
+        Ask::NewGame(level) => (
+            "New puzzle?",
+            format!("Deal a fresh {} puzzle?", level.name()),
+            app.at_stake().map_or_else(String::new, |g| {
+                format!("Your {} game so far will be lost.", g.difficulty.name())
+            }),
+        ),
+        Ask::Restart => (
+            "Start over?",
+            "Clear all your digits and notes?".to_string(),
+            "The clock and mistakes carry on.".to_string(),
+        ),
+    };
+    let (r, inner) = popup(frame, area, 44, 10, title);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(""),
+            Line::styled(
+                question,
+                Style::default().fg(INK).add_modifier(Modifier::BOLD),
+            ),
+            Line::styled(cost, Style::default().fg(MUTED)),
+        ])
+        .alignment(Alignment::Center),
+        inner,
+    );
+    let key = |k: &'static str, what: &'static str, colour| {
+        Line::from(vec![
+            Span::styled(k, Style::default().fg(colour).add_modifier(Modifier::BOLD)),
+            Span::styled(what, Style::default().fg(INK)),
+        ])
+    };
+    let [yes, no] = popup_buttons(frame, r, [key("y", " Yes", RED), key("n", " No", ACCENT)]);
+    (r, yes, no)
+}
+
+/// Each level's record: solves, best and average times, and streaks.
+fn draw_stats(frame: &mut Frame, area: Rect, app: &App) {
+    let head = Style::default().fg(ACCENT).add_modifier(Modifier::BOLD);
+    let time = |t: Option<Duration>| t.map_or_else(|| "—".to_string(), format_time);
+    let mut lines = vec![
+        Line::from(""),
+        Line::styled(
+            format!(
+                " {:<7}{:>7}{:>10}{:>10}{:>8}{:>8}",
+                "Level", "Solved", "Best", "Average", "Streak", "Most"
+            ),
+            head,
+        ),
+    ];
+    for level in Difficulty::ALL {
+        let s = app.stats.level(level);
+        lines.push(Line::styled(
+            format!(
+                " {:<7}{:>7}{:>10}{:>10}{:>8}{:>8}",
+                level.name(),
+                s.solved,
+                time(s.best()),
+                time(s.average()),
+                s.streak,
+                s.best_streak,
+            ),
+            Style::default().fg(INK),
+        ));
+    }
+    lines.extend([
+        Line::from(""),
+        Line::styled(
+            " Times and streaks count tutor-free solves; a",
+            Style::default().fg(MUTED),
+        ),
+        Line::styled(
+            " streak ends with a tutor's help or a game left.",
+            Style::default().fg(MUTED),
+        ),
+        Line::from(""),
+        Line::styled(
+            " press Esc or click anywhere to close",
+            Style::default().fg(MUTED),
+        ),
+    ]);
+    let (_, inner) = popup(frame, area, 56, lines.len() as u16 + 2, "Stats");
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn draw_dealing(frame: &mut Frame, area: Rect, level: Difficulty) {
@@ -795,6 +906,13 @@ fn draw_overlay(frame: &mut Frame, area: Rect, app: &App, overlay: Overlay, hits
             push_hit(hits, new_btn, Some(Action::NewGame));
             push_hit(hits, levels_btn, Some(Action::OpenLevels));
         }
+        Overlay::Confirm(ask) => {
+            let (r, yes, no) = draw_confirm(frame, area, app, ask);
+            push_hit(hits, r, None);
+            push_hit(hits, yes, Some(Action::Confirm));
+            push_hit(hits, no, Some(Action::Close));
+        }
+        Overlay::Stats => draw_stats(frame, area, app),
     }
 }
 
@@ -974,7 +1092,7 @@ fn draw_game(frame: &mut Frame, area: Rect, app: &App, game: &Game, hits: &mut V
         return;
     }
     let focus = step
-        .filter(|&(_, stage)| stage != TutorStage::Nudge)
+        .filter(|&(_, stage)| stage == TutorStage::ShowMe)
         .map(|(step, _)| step);
 
     let width = area.right() - ox;
@@ -1044,6 +1162,7 @@ fn draw_game(frame: &mut Frame, area: Rect, app: &App, game: &Game, hits: &mut V
             ("1-9", "fill"),
             ("n", "notes"),
             ("u", "undo"),
+            ("r", "redo"),
             ("t", "tutor"),
             ("e", "erase"),
             ("d", "level"),
@@ -1597,6 +1716,25 @@ mod tests {
     }
 
     #[test]
+    fn your_digit_stays_amber_under_the_cursor() {
+        let mut app = app_with_game();
+        let game = app.game.as_mut().unwrap();
+        game.set_selected(0, 3);
+        game.enter_digit(game.solution[3]);
+        let (ox, oy) = board_origin(Rect::new(0, 0, W, 50));
+        let digit_fg = |app: &App, c| {
+            let mut terminal = Terminal::new(TestBackend::new(W, 50)).unwrap();
+            terminal.draw(|f| drop(render(f, app))).unwrap();
+            let (x, y) = cell_screen(ox, oy, 0, c);
+            terminal.backend().buffer()[(x + CELL_W / 2, y + CELL_H / 2)].fg
+        };
+        assert_eq!(digit_fg(&app, 3), PEN_SEL);
+        app.game.as_mut().unwrap().set_selected(0, 0); // a given 5
+        assert_eq!(digit_fg(&app, 0), BRIGHT);
+        assert_eq!(digit_fg(&app, 3), PEN);
+    }
+
+    #[test]
     fn nothing_falls_through_to_terminal_colors() {
         // Every screen paints its own colors: the terminal's theme must
         // never show through as a default foreground or background.
@@ -1685,9 +1823,66 @@ mod tests {
     }
 
     #[test]
+    fn try_first_pane_names_nothing() {
+        let mut app = app_with_game();
+        app.apply(Action::Tutor);
+        let (lines, hits) = draw(&app, W, 50);
+        let pane = pane_text(&lines);
+        assert!(pane.contains("Try first."), "{pane}");
+        assert!(!pane.contains("Look for") && !names_a_cell(&pane), "{pane}");
+        assert!(
+            !pane.contains("Going by placed digits"),
+            "said already: {pane}"
+        );
+        for want in [Action::Tutor, Action::CloseTutor] {
+            assert!(hits.iter().any(|h| h.action == Some(want)), "{want:?}");
+        }
+        // Your board, not the step on it.
+        let (screen, _) = draw(&app, W, 50);
+        assert!(!text(&screen).contains("EXAMPLE"));
+    }
+
+    #[test]
+    fn popups_never_sit_on_half_a_board_digit() {
+        // A board digit is two columns wide: the screen skips the column
+        // after it, so a popup's border there never shows. A full board
+        // puts a digit wherever an edge can fall.
+        let (_, solution) = test_board();
+        let mut app = App::new(Store::none());
+        app.start_game(Game::new(Difficulty::Easy, solution, solution));
+        for overlay in [
+            Overlay::Confirm(Ask::Restart),
+            Overlay::Levels { cursor: 0 },
+        ] {
+            app.overlays = vec![overlay];
+            for (w, h) in (MIN_W..MIN_W + 12).flat_map(|w| (MIN_H..MIN_H + 4).map(move |h| (w, h)))
+            {
+                let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+                let mut hits = Vec::new();
+                terminal.draw(|f| hits = render(f, &app)).unwrap();
+                let buf = terminal.backend().buffer();
+                // The popup swallows clicks on itself.
+                let r = hits
+                    .iter()
+                    .find(|hit| hit.action.is_none() && hit.rect != buf.area)
+                    .unwrap()
+                    .rect;
+                for y in r.y + 1..r.bottom() - 1 {
+                    assert_eq!(
+                        buf[(r.x, y)].symbol(),
+                        "│",
+                        "{overlay:?} at {w}x{h}, row {y}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn nudge_pane_names_only_the_strategy() {
         let mut app = app_with_game();
         app.apply(Action::Tutor);
+        app.apply(Action::Tutor); // past "try first"
         let (lines, hits) = draw(&app, W, 50);
         let pane = pane_text(&lines);
         assert!(pane.contains("Look for"), "{pane}");
@@ -1713,6 +1908,7 @@ mod tests {
     fn pair_mark_mode_says_so() {
         let mut app = app_with_game();
         app.apply(Action::Tutor);
+        app.apply(Action::Tutor); // past "try first"
         let pane = pane_text(&draw(&app, W, 50).0);
         assert!(
             pane.contains("Going by placed digits — your notes aren't filled in yet."),
@@ -1743,8 +1939,8 @@ mod tests {
     #[test]
     fn show_me_names_the_cell_and_the_digit() {
         let mut app = app_with_game();
-        for _ in 0..3 {
-            app.apply(Action::Tutor); // nudge, explain, show me
+        for _ in 0..4 {
+            app.apply(Action::Tutor); // try first, nudge, explain, show me
         }
         let tutor = app.tutor.clone().unwrap();
         let Advice::Step(step) = &tutor.advice else {

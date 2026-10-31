@@ -40,6 +40,19 @@ pub enum Overlay {
     Paused,
     /// Puzzle solved. Dismissing it leaves the finished board on screen.
     Won,
+    /// "Are you sure?" before throwing away a game's progress.
+    Confirm(Ask),
+    /// Solves, best and average times and streaks, per level.
+    Stats,
+}
+
+/// Something that loses work, asked about first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ask {
+    /// Deal a new puzzle at this level in place of the game so far.
+    NewGame(Difficulty),
+    /// Clear the board back to its givens.
+    Restart,
 }
 
 /// Something done to the board itself.
@@ -51,6 +64,7 @@ pub enum BoardAction {
     Erase,
     ToggleNotes,
     Undo,
+    Redo,
 }
 
 /// Everything the player can ask for, by key or by click.
@@ -63,6 +77,13 @@ pub enum Action {
     StartLevel(Difficulty),
     /// Pick the saved game back up.
     Continue,
+    /// Clear the board back to its givens (after asking).
+    Restart,
+    /// Leave the game, saved, for the title menu.
+    ToTitle,
+    /// Bring back the "Solved!" popup over a finished board.
+    ShowResult,
+    OpenStats,
     CursorUp,
     CursorDown,
     /// Enter on a menu: take the highlighted row.
@@ -94,6 +115,9 @@ pub enum Action {
 /// How far the tutor has gone with its advice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TutorStage {
+    /// Notes aren't filled in yet: a word to try first, which names
+    /// nothing and so costs nothing.
+    TryFirst,
     /// Only the strategy's name, so you can hunt for it yourself.
     Nudge,
     /// The strategy in plain steps, and a worked example on a sample
@@ -122,6 +146,7 @@ impl Tutor {
     /// no strategy applies. Eliminations need full notes to clear.
     pub fn can_apply(&self) -> bool {
         match (&self.advice, self.stage) {
+            (_, TutorStage::TryFirst) => false,
             (Advice::Stuck, _) => true,
             (Advice::Step(step), TutorStage::ShowMe) => match step.effect {
                 Effect::Place { .. } => true,
@@ -138,6 +163,7 @@ pub enum MenuRow {
     Continue,
     Level(Difficulty),
     Library,
+    Stats,
 }
 
 pub struct App {
@@ -156,12 +182,14 @@ pub struct App {
     /// The tutor's pane, while it is open.
     pub tutor: Option<Tutor>,
     /// The techniques library, while it is on screen instead of the title
-    /// menu. Only reachable before a game starts.
+    /// menu. Only reachable from the title menu.
     pub library: Option<Library>,
     store: Store,
     last_saved: Instant,
     /// Whether the terminal window has focus, as far as we know.
     focused: bool,
+    /// Whether the screen is big enough to show the game.
+    fits: bool,
     /// Saving has failed and the player has been told.
     storage_failing: bool,
 }
@@ -207,13 +235,14 @@ impl App {
             last_level,
             dealing: None,
             resume,
-            stats: store.load_stats().unwrap_or_default(),
+            stats: store.load_stats().ok().flatten().unwrap_or_default(),
             new_best: false,
             tutor: None,
             library: None,
             store,
             last_saved: Instant::now(),
             focused: true,
+            fits: true,
             storage_failing: false,
         };
         if app.resume.is_none() {
@@ -223,14 +252,14 @@ impl App {
     }
 
     /// The title menu: "Continue" first when there's a saved game, the
-    /// library last.
+    /// library and stats last.
     pub fn menu_rows(&self) -> Vec<MenuRow> {
         let levels = Difficulty::ALL.map(MenuRow::Level);
         self.resume
             .iter()
             .map(|_| MenuRow::Continue)
             .chain(levels)
-            .chain([MenuRow::Library])
+            .chain([MenuRow::Library, MenuRow::Stats])
             .collect()
     }
 
@@ -249,14 +278,17 @@ impl App {
         if mods.contains(KeyModifiers::CONTROL) {
             return match code {
                 Char('c' | 'q') => Some(Action::Quit),
-                Char('z') if self.top().is_none() => self.base_key(Char('u')),
+                Char('z') if self.fits => Some(Action::Board(BoardAction::Undo)),
+                Char('r' | 'y') if self.fits => Some(Action::Board(BoardAction::Redo)),
                 _ => None,
             };
         }
         if let Char('q' | 'Q') = code {
             return Some(Action::Quit);
         }
-        if self.dealing.is_some() {
+        // Nothing else while dealing, or while the screen is too small to
+        // show what a key would do.
+        if self.dealing.is_some() || !self.fits {
             return None;
         }
         let action = match self.top() {
@@ -281,8 +313,18 @@ impl App {
             Some(Overlay::Won) => match code {
                 Enter | Char('n' | 'N') => Action::NewGame,
                 Char('d') => Action::OpenLevels,
+                Char('m') => Action::ToTitle,
                 Esc => Action::Close,
                 Char('?') | F(1) => Action::OpenHelp,
+                _ => return None,
+            },
+            Some(Overlay::Confirm(_)) => match code {
+                Enter | Char('y' | 'Y') => Action::Confirm,
+                Esc | Char('n' | 'N') => Action::Close,
+                _ => return None,
+            },
+            Some(Overlay::Stats) => match code {
+                Esc | Enter | Char(' ' | '7') => Action::Close,
                 _ => return None,
             },
         };
@@ -291,7 +333,7 @@ impl App {
 
     /// Keys for the base screen, when no overlay is open.
     fn base_key(&self, code: KeyCode) -> Option<Action> {
-        use BoardAction::{Digit, Erase, Move, ToggleNotes, Undo};
+        use BoardAction::{Digit, Erase, Move, Redo, ToggleNotes, Undo};
         use KeyCode::{Backspace, Char, Delete, Down, Enter, Esc, F, Left, Right, Up};
 
         let Some(game) = &self.game else {
@@ -306,6 +348,7 @@ impl App {
                 Char('?') | F(1) => Some(Action::OpenHelp),
                 Char('c') if self.resume.is_some() => Some(Action::Continue),
                 Char('6') => Some(Action::OpenLibrary),
+                Char('7') => Some(Action::OpenStats),
                 Char(c) => level_for_key(c),
                 _ => None,
             };
@@ -321,21 +364,25 @@ impl App {
             Char('d') => Action::OpenLevels,
             Char('?') | F(1) => Action::OpenHelp,
             Char('N') => Action::NewGame,
+            Char('m') => Action::ToTitle,
             // A finished board only takes navigation and "what next" keys.
             Enter | Char('n') if game.completed => Action::NewGame,
+            Char('w') if game.completed => Action::ShowResult,
             _ if game.completed => return None,
             Char(c @ '1'..='9') => Action::Board(Digit(c as u8 - b'0')),
             Char('0' | 'x' | 'X' | 'e' | 'E') | Backspace | Delete => Action::Board(Erase),
             Char('n') => Action::Board(ToggleNotes),
             Char('u' | 'U') => Action::Board(Undo),
+            Char('r') => Action::Board(Redo),
+            Char('R') => Action::Restart,
             Char('t') => Action::Tutor,
-            Char('a') if self.tutor.as_ref().is_some_and(Tutor::can_apply) => Action::TutorApply,
+            Char('a') if self.tutor.is_some() => Action::TutorApply,
             Esc if self.tutor.is_some() => Action::CloseTutor,
             Char('p' | 'P') => Action::Pause,
             _ => return None,
         };
         // The board on screen is an example: yours waits for you.
-        if explaining && matches!(action, Action::Board(_)) {
+        if explaining && matches!(action, Action::Board(_) | Action::Restart) {
             return None;
         }
         Some(action)
@@ -356,9 +403,17 @@ impl App {
             // Only quitting works while a puzzle is being dealt.
             _ if self.dealing.is_some() => {}
             Action::Board(b) => self.play(b),
-            Action::NewGame => self.request_new_game(self.last_level),
-            Action::StartLevel(level) => self.request_new_game(level),
+            Action::NewGame => self.new_game(self.last_level),
+            Action::StartLevel(level) => self.new_game(level),
             Action::Continue => self.continue_saved(),
+            Action::Restart => self.ask_restart(),
+            Action::ToTitle => self.back_to_title(),
+            Action::ShowResult => self.show_result(),
+            Action::OpenStats => {
+                if self.game.is_none() && self.library.is_none() {
+                    self.overlays.push(Overlay::Stats);
+                }
+            }
             Action::CursorUp => self.move_cursor(-1),
             Action::CursorDown => self.move_cursor(1),
             Action::Confirm => self.confirm(),
@@ -383,13 +438,117 @@ impl App {
 
     fn confirm(&mut self) {
         match self.top() {
-            Some(Overlay::Levels { cursor }) => self.request_new_game(Difficulty::ALL[cursor]),
+            Some(Overlay::Levels { cursor }) => self.new_game(Difficulty::ALL[cursor]),
+            Some(Overlay::Confirm(ask)) => {
+                self.overlays.pop();
+                match ask {
+                    Ask::NewGame(level) => {
+                        self.give_up();
+                        self.request_new_game(level);
+                    }
+                    Ask::Restart => self.restart(),
+                }
+            }
             None if self.game.is_none() => match self.menu_rows()[self.menu_cursor] {
                 MenuRow::Continue => self.continue_saved(),
-                MenuRow::Level(level) => self.request_new_game(level),
+                MenuRow::Level(level) => self.new_game(level),
                 MenuRow::Library => self.browse(Action::OpenLibrary),
+                MenuRow::Stats => self.overlays.push(Overlay::Stats),
             },
             _ => {}
+        }
+    }
+
+    /// The unfinished game a new puzzle would replace, if it has anything
+    /// on it worth asking about: the one on screen, or on the title menu
+    /// the saved one.
+    pub fn at_stake(&self) -> Option<&Game> {
+        let game = match (&self.game, &self.resume) {
+            (Some(game), _) | (None, Some(game)) => game,
+            (None, None) => return None,
+        };
+        (!game.completed && game.has_progress()).then_some(game)
+    }
+
+    /// Deal a new puzzle at `level`, first asking if that throws away a
+    /// game in progress.
+    fn new_game(&mut self, level: Difficulty) {
+        if self.at_stake().is_some() {
+            if let Some(Overlay::Levels { .. }) = self.top() {
+                self.overlays.pop();
+            }
+            self.overlays.push(Overlay::Confirm(Ask::NewGame(level)));
+        } else {
+            self.request_new_game(level);
+        }
+    }
+
+    /// The game in progress is being dropped for a new one: that ends its
+    /// level's streak.
+    fn give_up(&mut self) {
+        if let Some(level) = self.at_stake().map(|g| g.difficulty) {
+            let ((), saved) = self.update_stats(|stats| stats.abandon(level));
+            self.report(saved, "Couldn't save stats");
+        }
+    }
+
+    /// Change the stats, building on what's on disk now: another running
+    /// tudoku may have recorded solves since we loaded. If the file can't
+    /// be read, the change stays in memory, since writing would replace
+    /// records we never saw.
+    fn update_stats<T>(&mut self, change: impl FnOnce(&mut Stats) -> T) -> (T, io::Result<()>) {
+        let read = self.store.load_stats().map(|on_disk| {
+            if let Some(stats) = on_disk {
+                self.stats = stats;
+            }
+        });
+        let out = change(&mut self.stats);
+        let saved = read.and_then(|()| self.store.save_stats(&self.stats));
+        (out, saved)
+    }
+
+    /// `R`: ask before clearing the board, if there's anything on it.
+    fn ask_restart(&mut self) {
+        let Some(g) = &mut self.game else { return };
+        if g.completed || g.paused || !self.overlays.is_empty() {
+            return;
+        }
+        if g.has_progress() {
+            self.overlays.push(Overlay::Confirm(Ask::Restart));
+        } else {
+            g.say("Nothing to clear yet");
+        }
+    }
+
+    fn restart(&mut self) {
+        let Some(g) = &mut self.game else { return };
+        if g.restart() {
+            self.tutor = None;
+            self.save();
+        }
+    }
+
+    /// `m`: back to the title menu, where the game waits as "Continue"
+    /// with its clock stopped. A finished game is simply left.
+    fn back_to_title(&mut self) {
+        let Some(g) = &mut self.game else { return };
+        g.set_paused(true);
+        self.save();
+        let game = self.game.take().filter(|g| !g.completed);
+        self.resume = game;
+        self.tutor = None;
+        self.overlays.clear();
+        self.menu_cursor = if self.resume.is_some() {
+            0
+        } else {
+            self.menu_row_of(self.last_level)
+        };
+    }
+
+    /// `w`: the "Solved!" popup again, after Esc put it away.
+    fn show_result(&mut self) {
+        if self.game.as_ref().is_some_and(|g| g.completed) && self.overlays.is_empty() {
+            self.overlays.push(Overlay::Won);
         }
     }
 
@@ -464,27 +623,32 @@ impl App {
     fn finish(&mut self) {
         self.tutor = None;
         let Some(game) = &self.game else { return };
-        // Another running tudoku may have recorded solves since we loaded:
-        // build on what's on disk now, not on our startup copy.
-        if let Some(on_disk) = self.store.load_stats() {
-            self.stats = on_disk;
-        }
-        self.new_best = self
-            .stats
-            .record(game.difficulty, game.elapsed(), game.tutor_used);
+        let (level, time, helped) = (game.difficulty, game.elapsed(), game.tutor_used);
+        let (new_best, stats_saved) = self.update_stats(|stats| stats.record(level, time, helped));
+        self.new_best = new_best;
         // Clear the save even if the stats can't be written: a solved
         // puzzle must never come back as "Continue".
-        let stats_saved = self.store.save_stats(&self.stats);
         let cleared = self.store.clear_game();
         self.report(stats_saved.and(cleared), "Couldn't save stats");
         self.overlays.push(Overlay::Won);
     }
 
     fn close_top(&mut self) {
-        if self.overlays.pop() == Some(Overlay::Paused)
-            && let Some(g) = &mut self.game
-        {
-            g.set_paused(false);
+        let closed = self.overlays.pop();
+        let Some(g) = &mut self.game else { return };
+        match closed {
+            Some(Overlay::Paused) => g.set_paused(false),
+            Some(Overlay::Won) => g.say("w shows the result again"),
+            _ => {}
+        }
+    }
+
+    /// Whether the screen can show the game. A screen too small to show it
+    /// pauses it, since you can't see what the clock is timing.
+    pub fn set_fits(&mut self, fits: bool) {
+        self.fits = fits;
+        if !fits {
+            self.pause();
         }
     }
 
@@ -514,16 +678,23 @@ impl App {
         }
         let Some(g) = &mut self.game else { return };
         let was_done = g.completed;
-        match action {
-            BoardAction::Move(dr, dc) => g.move_selection(dr, dc),
-            BoardAction::Select(r, c) => g.click(r, c),
+        // Whether the game changed, so there's something to save.
+        let edit = match action {
+            BoardAction::Move(dr, dc) => {
+                g.move_selection(dr, dc);
+                false
+            }
+            BoardAction::Select(r, c) => {
+                g.click(r, c);
+                false
+            }
             BoardAction::Digit(d) => g.enter_digit(d),
             BoardAction::Erase => g.erase(),
             BoardAction::ToggleNotes => g.toggle_notes_mode(),
             BoardAction::Undo => g.undo(),
-        }
+            BoardAction::Redo => g.redo(),
+        };
         let solved = g.completed && !was_done;
-        let edit = !matches!(action, BoardAction::Move(..) | BoardAction::Select(..));
         if edit {
             self.drop_stale_tutor();
         }
@@ -546,13 +717,20 @@ impl App {
             return;
         }
         if let Some(t) = &mut self.tutor {
-            if let Advice::Step(step) = &t.advice {
-                t.stage = match t.stage {
-                    TutorStage::Nudge if examples::example(step.technique).is_some() => {
-                        TutorStage::Explain { stage: 0 }
-                    }
-                    _ => TutorStage::ShowMe,
-                };
+            match (&t.advice, t.stage) {
+                // Asked again after the word to try first: that's help.
+                (_, TutorStage::TryFirst) => {
+                    t.stage = TutorStage::Nudge;
+                    g.use_tutor();
+                    self.save();
+                }
+                (Advice::Step(step), TutorStage::Nudge)
+                    if examples::example(step.technique).is_some() =>
+                {
+                    t.stage = TutorStage::Explain { stage: 0 };
+                }
+                (Advice::Step(_), _) => t.stage = TutorStage::ShowMe,
+                _ => {}
             }
             return;
         }
@@ -561,13 +739,23 @@ impl App {
         if let Advice::WrongDigit(i) | Advice::WrongNotes(i) = advice {
             g.set_selected(row_of(i), col_of(i));
         }
-        g.use_tutor();
+        // With notes still to fill in, there's more to try alone first.
+        // A wrong digit is always worth hearing about at once.
+        let try_first =
+            mode == NoteMode::PairMarks && matches!(advice, Advice::Step(_) | Advice::Stuck);
         self.tutor = Some(Tutor {
             mode,
             advice,
-            stage: TutorStage::Nudge,
+            stage: if try_first {
+                TutorStage::TryFirst
+            } else {
+                TutorStage::Nudge
+            },
         });
-        self.save();
+        if !try_first {
+            g.use_tutor();
+            self.save();
+        }
     }
 
     /// `←` / `→`: step the worked example back or on, within its stages,
@@ -626,12 +814,24 @@ impl App {
         let (Some(g), Some(t)) = (&mut self.game, &self.tutor) else {
             return;
         };
-        if !t.can_apply() || g.completed || g.paused {
+        if g.completed || g.paused {
+            return;
+        }
+        if !t.can_apply() {
+            g.say(match (&t.advice, t.stage) {
+                (Advice::WrongDigit(_) | Advice::WrongNotes(_), _) => "Fix that first",
+                (Advice::Step(_), TutorStage::ShowMe) => {
+                    "a clears notes once every empty cell has them"
+                }
+                _ => "t until the tutor shows the step, then a",
+            });
             return;
         }
         match &t.advice {
             Advice::Step(step) => {
-                g.apply_step(step, t.mode);
+                if !g.apply_step(step, t.mode) {
+                    return;
+                }
             }
             Advice::Stuck => {
                 let s = g.selected_idx();
@@ -684,8 +884,9 @@ impl App {
         self.new_best = false;
         self.overlays.clear();
         self.save();
-        // Dealt while the player was in another window: wait for them.
-        if !self.focused {
+        // Dealt while the player was in another window, or with the
+        // window too small to show it: wait for them.
+        if !self.focused || !self.fits {
             self.pause();
         }
     }
@@ -1062,6 +1263,7 @@ mod tests {
         let easy = Store::at(dir.path())
             .load_stats()
             .unwrap()
+            .unwrap()
             .level(Difficulty::Easy);
         assert_eq!(easy.solved, 2, "neither solve is lost");
         assert!(!a.new_best || a.stats.level(Difficulty::Easy).best() == easy.best());
@@ -1110,7 +1312,7 @@ mod tests {
         let mut app = app_on_disk(&dir);
         let (p, s) = test_board();
         app.start_game(Game::new(Difficulty::Easy, p, s));
-        key(&mut app, KeyCode::Char('t')); // even a nudge counts
+        open_tutor(&mut app); // even a nudge counts
         key(&mut app, KeyCode::Esc);
         solve(&mut app);
         assert!(!app.new_best);
@@ -1128,7 +1330,7 @@ mod tests {
 
     /// Press `t` until the tutor shows its step on the board.
     fn show_me(app: &mut App) {
-        for _ in 0..4 {
+        for _ in 0..5 {
             if stage(app) == Some(TutorStage::ShowMe) {
                 return;
             }
@@ -1148,10 +1350,28 @@ mod tests {
         }
     }
 
+    /// Open the tutor at its nudge, past the word to try first that a
+    /// board without full notes gets.
+    fn open_tutor(app: &mut App) {
+        key(app, KeyCode::Char('t'));
+        if stage(app) == Some(TutorStage::TryFirst) {
+            key(app, KeyCode::Char('t'));
+        }
+    }
+
     #[test]
     fn t_opens_a_nudge_and_counts_once_per_opening() {
         let mut app = app_with_game(Difficulty::Easy);
         let used = |app: &App| app.game.as_ref().unwrap().tutor_used;
+        key(&mut app, KeyCode::Char('t'));
+        assert_eq!(stage(&app), Some(TutorStage::TryFirst), "no notes yet");
+        assert_eq!(used(&app), 0, "trying first costs nothing");
+        key(&mut app, KeyCode::Char('a'));
+        assert_eq!(
+            app.game.as_ref().unwrap().values,
+            test_board().0,
+            "nothing to do yet"
+        );
         key(&mut app, KeyCode::Char('t'));
         assert_eq!(stage(&app), Some(TutorStage::Nudge));
         assert_eq!(used(&app), 1);
@@ -1163,8 +1383,33 @@ mod tests {
         key(&mut app, KeyCode::Esc);
         assert_eq!(app.tutor, None);
         key(&mut app, KeyCode::Char('t'));
-        assert_eq!(stage(&app), Some(TutorStage::Nudge), "a fresh start");
-        assert_eq!(used(&app), 2);
+        assert_eq!(stage(&app), Some(TutorStage::TryFirst), "a fresh start");
+        key(&mut app, KeyCode::Esc);
+        assert_eq!(used(&app), 1, "closed before it named anything");
+    }
+
+    #[test]
+    fn full_notes_go_straight_to_the_nudge() {
+        let mut app = app_with_game(Difficulty::Easy);
+        let g = app.game.as_mut().unwrap();
+        for i in (0..CELLS).filter(|&i| g.values[i] == 0) {
+            g.notes[i] = crate::sudoku::candidates_mask(&g.values, i);
+        }
+        key(&mut app, KeyCode::Char('t'));
+        assert_eq!(stage(&app), Some(TutorStage::Nudge));
+        assert_eq!(app.game.as_ref().unwrap().tutor_used, 1);
+    }
+
+    #[test]
+    fn a_wrong_digit_is_named_without_trying_first() {
+        let mut app = app_with_game(Difficulty::Easy);
+        key(&mut app, KeyCode::Char('9')); // (0,2) is 4
+        key(&mut app, KeyCode::Char('t'));
+        let t = tutor_of(&app);
+        assert_eq!(
+            (t.stage, &t.advice),
+            (TutorStage::Nudge, &Advice::WrongDigit(2))
+        );
     }
 
     /// The stage of the worked example on screen.
@@ -1184,7 +1429,7 @@ mod tests {
     #[test]
     fn explain_comes_between_nudge_and_show_me() {
         let mut app = app_with_game(Difficulty::Easy);
-        key(&mut app, KeyCode::Char('t'));
+        open_tutor(&mut app);
         assert_eq!(stage(&app), Some(TutorStage::Nudge));
         key(&mut app, KeyCode::Char('t'));
         assert_eq!(stage(&app), Some(TutorStage::Explain { stage: 0 }));
@@ -1217,7 +1462,7 @@ mod tests {
 
         // Esc leaves the example for your game at once.
         key(&mut app, KeyCode::Esc);
-        key(&mut app, KeyCode::Char('t'));
+        open_tutor(&mut app);
         key(&mut app, KeyCode::Char('t'));
         assert_eq!(example_stage(&app), 0);
         key(&mut app, KeyCode::Esc);
@@ -1228,7 +1473,7 @@ mod tests {
     #[test]
     fn arrows_step_through_the_example() {
         let mut app = app_with_game(Difficulty::Easy);
-        key(&mut app, KeyCode::Char('t'));
+        open_tutor(&mut app);
         key(&mut app, KeyCode::Char('t'));
         let before = board_state(&app);
         for want in [1, 2, 2] {
@@ -1256,7 +1501,7 @@ mod tests {
     #[test]
     fn pausing_during_explain_hides_the_example() {
         let mut app = app_with_game(Difficulty::Easy);
-        key(&mut app, KeyCode::Char('t'));
+        open_tutor(&mut app);
         key(&mut app, KeyCode::Char('t'));
         key(&mut app, KeyCode::Right);
         assert!(render(&app).0.contains("EXAMPLE"));
@@ -1276,7 +1521,7 @@ mod tests {
     #[test]
     fn clicks_on_the_example_do_not_touch_your_game() {
         let mut app = app_with_game(Difficulty::Easy);
-        key(&mut app, KeyCode::Char('t'));
+        open_tutor(&mut app);
         key(&mut app, KeyCode::Char('t'));
         let before = board_state(&app);
         // The board's top-left corner, as drawn.
@@ -1301,7 +1546,7 @@ mod tests {
     #[test]
     fn board_keys_still_work_during_the_nudge() {
         let mut app = app_with_game(Difficulty::Easy);
-        key(&mut app, KeyCode::Char('t'));
+        open_tutor(&mut app);
         let nudge = app.tutor.clone();
         key(&mut app, KeyCode::Down); // (1,2) is empty
         key(&mut app, KeyCode::Char('n'));
@@ -1490,15 +1735,19 @@ mod tests {
     }
 
     #[test]
-    fn the_title_menu_ends_with_the_library() {
+    fn the_title_menu_ends_with_the_library_and_stats() {
         let app = title();
-        assert_eq!(app.menu_rows().last(), Some(&MenuRow::Library));
+        assert_eq!(
+            app.menu_rows()[app.menu_rows().len() - 2..],
+            [MenuRow::Library, MenuRow::Stats]
+        );
         let screen = render(&app).0;
         assert!(
             screen.contains("6. Library Every strategy, with a worked example"),
             "{screen}"
         );
-        assert!(screen.contains("keys 1-6"), "{screen}");
+        assert!(screen.contains("7. Stats"), "{screen}");
+        assert!(screen.contains("↑↓/jk + Enter, keys 1-7"), "{screen}");
     }
 
     #[test]
@@ -1630,5 +1879,238 @@ mod tests {
         key(&mut app, KeyCode::Down);
         let at = Technique::DeathBlossom;
         assert_eq!(app.library, Some(Library::Lesson { at, stage: 1 }));
+    }
+
+    /// The keys `N` and then `answer` (y or n) on a game with a digit in.
+    fn new_game_asked(answer: char) -> App {
+        let mut app = app_with_game(Difficulty::Easy);
+        key(&mut app, KeyCode::Char('9'));
+        key(&mut app, KeyCode::Char('N'));
+        assert_eq!(
+            app.top(),
+            Some(Overlay::Confirm(Ask::NewGame(Difficulty::Easy)))
+        );
+        assert_eq!(app.dealing, None, "nothing dealt yet");
+        key(&mut app, KeyCode::Char(answer));
+        app
+    }
+
+    #[test]
+    fn a_new_puzzle_asks_before_dropping_a_game_in_progress() {
+        let app = new_game_asked('y');
+        assert_eq!(app.dealing, Some(Difficulty::Easy));
+        let app = new_game_asked('n');
+        assert_eq!((app.dealing, app.top()), (None, None), "kept playing");
+        // Caps Lock turns notes (n) into N twice over: still nothing lost.
+        let app = new_game_asked('N');
+        assert_eq!((app.dealing, app.top()), (None, None));
+        // Nothing on the board: nothing to ask about.
+        let mut app = app_with_game(Difficulty::Easy);
+        key(&mut app, KeyCode::Char('N'));
+        assert_eq!(app.dealing, Some(Difficulty::Easy));
+    }
+
+    #[test]
+    fn the_level_picker_asks_too_and_a_click_answers() {
+        let mut app = app_with_game(Difficulty::Easy);
+        key(&mut app, KeyCode::Char('9'));
+        key(&mut app, KeyCode::Char('d'));
+        key(&mut app, KeyCode::Char('3'));
+        assert_eq!(
+            app.overlays,
+            [Overlay::Confirm(Ask::NewGame(Difficulty::Hard))]
+        );
+        let (screen, hits) = render(&app);
+        assert!(screen.contains("Deal a fresh Hard puzzle?"), "{screen}");
+        assert!(
+            screen.contains("Your Easy game so far will be lost."),
+            "{screen}"
+        );
+        let yes = hits
+            .iter()
+            .find(|h| h.action == Some(Action::Confirm))
+            .unwrap();
+        click(&mut app, yes.rect.x + 1, yes.rect.y + 1);
+        assert_eq!(app.dealing, Some(Difficulty::Hard));
+    }
+
+    #[test]
+    fn dropping_a_game_ends_its_streak_but_an_empty_one_does_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_on_disk(&dir);
+        let (p, s) = test_board();
+        app.start_game(Game::new(Difficulty::Easy, p, s));
+        solve(&mut app);
+        assert_eq!(app.stats.level(Difficulty::Easy).streak, 1);
+        app.start_game(Game::new(Difficulty::Easy, p, s));
+        key(&mut app, KeyCode::Char('N'));
+        assert_eq!(
+            app.stats.level(Difficulty::Easy).streak,
+            1,
+            "empty: no loss"
+        );
+        app.start_game(Game::new(Difficulty::Easy, p, s));
+        key(&mut app, KeyCode::Char('9'));
+        key(&mut app, KeyCode::Char('N'));
+        key(&mut app, KeyCode::Char('y'));
+        let on_disk = Store::at(dir.path()).load_stats().unwrap().unwrap();
+        let easy = on_disk.level(Difficulty::Easy);
+        assert_eq!((easy.streak, easy.best_streak), (0, 1));
+    }
+
+    #[test]
+    fn a_level_on_the_title_menu_asks_before_replacing_the_saved_game() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_on_disk(&dir);
+        let (p, s) = test_board();
+        app.start_game(Game::new(Difficulty::Hard, p, s));
+        key(&mut app, KeyCode::Char('9'));
+        let mut app = app_on_disk(&dir);
+        key(&mut app, KeyCode::Char('2'));
+        assert_eq!(
+            app.top(),
+            Some(Overlay::Confirm(Ask::NewGame(Difficulty::Medium)))
+        );
+        key(&mut app, KeyCode::Esc);
+        assert!(app.resume.is_some(), "still there to continue");
+        key(&mut app, KeyCode::Char('2'));
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.dealing, Some(Difficulty::Medium));
+    }
+
+    #[test]
+    fn capital_r_clears_the_board_after_asking() {
+        let mut app = app_with_game(Difficulty::Easy);
+        key(&mut app, KeyCode::Char('R'));
+        assert_eq!(app.top(), None, "nothing to clear");
+        key(&mut app, KeyCode::Char('9'));
+        key(&mut app, KeyCode::Char('R'));
+        assert_eq!(app.top(), Some(Overlay::Confirm(Ask::Restart)));
+        key(&mut app, KeyCode::Char('n'));
+        assert_eq!(app.game.as_ref().unwrap().values[2], 9, "kept");
+        key(&mut app, KeyCode::Char('R'));
+        key(&mut app, KeyCode::Char('y'));
+        let g = app.game.as_ref().unwrap();
+        assert_eq!(g.values, test_board().0);
+        assert_eq!(g.mistakes, 1);
+    }
+
+    #[test]
+    fn r_and_ctrl_r_redo() {
+        let mut app = app_with_game(Difficulty::Easy);
+        key(&mut app, KeyCode::Char('4')); // (0,2) is 4
+        key(&mut app, KeyCode::Char('u'));
+        assert_eq!(app.game.as_ref().unwrap().values[2], 0);
+        key(&mut app, KeyCode::Char('r'));
+        assert_eq!(app.game.as_ref().unwrap().values[2], 4);
+        key_mods(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
+        key_mods(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
+        assert_eq!(app.game.as_ref().unwrap().values[2], 4);
+        key_mods(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
+        key_mods(&mut app, KeyCode::Char('y'), KeyModifiers::CONTROL);
+        assert_eq!(app.game.as_ref().unwrap().values[2], 4);
+    }
+
+    #[test]
+    fn m_leaves_for_the_title_menu_with_the_game_waiting() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_on_disk(&dir);
+        let (p, s) = test_board();
+        app.start_game(Game::new(Difficulty::Hard, p, s));
+        key(&mut app, KeyCode::Char('4'));
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('m'));
+        assert!(app.game.is_none() && app.tutor.is_none());
+        let resume = app.resume.as_ref().expect("offered as Continue");
+        assert!(resume.paused, "its clock stopped");
+        assert_eq!(app.menu_rows()[app.menu_cursor], MenuRow::Continue);
+        let on_disk = Store::at(dir.path()).load_game().unwrap();
+        assert_eq!(on_disk.values[2], 4, "saved on the way out");
+        // The library is open to it now.
+        key(&mut app, KeyCode::Char('6'));
+        assert!(app.library.is_some());
+        key(&mut app, KeyCode::Esc);
+        key(&mut app, KeyCode::Char('c'));
+        let g = app.game.as_ref().unwrap();
+        assert!(!g.paused);
+        assert_eq!(g.values[2], 4);
+    }
+
+    #[test]
+    fn a_finished_game_is_simply_left_and_w_brings_its_result_back() {
+        let mut app = app_with_game(Difficulty::Easy);
+        solve(&mut app);
+        key(&mut app, KeyCode::Esc);
+        assert_eq!(app.top(), None);
+        assert_eq!(
+            app.game.as_ref().unwrap().message(Duration::from_secs(5)),
+            Some("w shows the result again")
+        );
+        key(&mut app, KeyCode::Char('w'));
+        assert_eq!(app.top(), Some(Overlay::Won));
+        key(&mut app, KeyCode::Char('m'));
+        assert!(app.game.is_none() && app.resume.is_none());
+        assert_eq!(app.top(), None);
+    }
+
+    #[test]
+    fn a_screen_too_small_pauses_and_takes_only_quit() {
+        let mut app = app_with_game(Difficulty::Easy);
+        app.set_fits(false);
+        assert_eq!(app.top(), Some(Overlay::Paused));
+        for code in [
+            KeyCode::Char('9'),
+            KeyCode::Char('p'),
+            KeyCode::Esc,
+            KeyCode::Char('N'),
+        ] {
+            key(&mut app, code);
+        }
+        let g = app.game.as_ref().unwrap();
+        assert!(g.paused);
+        assert_eq!((g.values[2], g.mistakes), (0, 0), "nothing typed blind");
+        assert_eq!(app.dealing, None);
+        assert!(key(&mut app, KeyCode::Char('q')), "quit still works");
+        app.set_fits(true);
+        key(&mut app, KeyCode::Char('p'));
+        assert!(!app.game.as_ref().unwrap().paused);
+    }
+
+    #[test]
+    fn seven_opens_the_stats_and_esc_closes_them() {
+        let mut app = title();
+        key(&mut app, KeyCode::Char('7'));
+        assert_eq!(app.top(), Some(Overlay::Stats));
+        let (screen, _) = render(&app);
+        assert!(
+            screen.contains("Solved") && screen.contains("Average"),
+            "{screen}"
+        );
+        assert!(
+            screen.contains("Easy") && screen.contains("Zen"),
+            "{screen}"
+        );
+        key(&mut app, KeyCode::Esc);
+        assert_eq!(app.top(), None);
+        let mut app = title();
+        while app.menu_rows()[app.menu_cursor] != MenuRow::Stats {
+            key(&mut app, KeyCode::Down);
+        }
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.top(), Some(Overlay::Stats));
+    }
+
+    #[test]
+    fn a_before_show_me_says_why_nothing_happened() {
+        let mut app = app_with_game(Difficulty::Easy);
+        open_tutor(&mut app);
+        key(&mut app, KeyCode::Char('a'));
+        let g = app.game.as_ref().unwrap();
+        assert_eq!(g.values, test_board().0);
+        assert_eq!(
+            g.message(Duration::from_secs(5)),
+            Some("t until the tutor shows the step, then a")
+        );
+        assert!(app.tutor.is_some(), "still open");
     }
 }

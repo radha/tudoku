@@ -95,14 +95,18 @@ fn install_panic_hook() {
     }));
 }
 
-/// SIGTERM or SIGINT (e.g. `kill`) asks the event loop to stop, so the
-/// game is saved and the terminal restored on the way out. SIGHUP keeps
-/// its default: the window is gone, so there is nothing to restore.
+/// SIGTERM, SIGINT (e.g. `kill`) or SIGHUP (the window closed) asks the
+/// event loop to stop, so the game is saved, with its clock, and the
+/// terminal restored on the way out. A second signal before that's done
+/// (the loop is stuck, say) exits at once.
 #[cfg(unix)]
 fn stop_on_signals() -> io::Result<Arc<AtomicBool>> {
-    use signal_hook::consts::{SIGINT, SIGTERM};
+    use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
     let stop = Arc::new(AtomicBool::new(false));
-    for signal in [SIGTERM, SIGINT] {
+    for signal in [SIGTERM, SIGINT, SIGHUP] {
+        // Registered first, so it sees the flag as the previous signal
+        // left it.
+        signal_hook::flag::register_conditional_shutdown(signal, 1, Arc::clone(&stop))?;
         signal_hook::flag::register(signal, Arc::clone(&stop))?;
     }
     Ok(stop)
@@ -113,10 +117,10 @@ fn stop_on_signals() -> io::Result<Arc<AtomicBool>> {
     Ok(Arc::new(AtomicBool::new(false)))
 }
 
-/// If the terminal goes away while SIGHUP is ignored (say, under `nohup`),
-/// crossterm's input loop spins forever on end-of-file and the main thread
-/// never gets control back. Watch for that from the side and exit; the
-/// autosave keeps the game to within a few seconds.
+/// If the terminal goes away and no SIGHUP reaches us, crossterm's input
+/// loop spins forever on end-of-file and the main thread never gets
+/// control back. Watch for that from the side and exit; the autosave
+/// keeps the game to within a few seconds.
 fn exit_if_terminal_vanishes() {
     if !io::stdin().is_terminal() {
         return; // input comes from /dev/tty some other way; nothing to watch
@@ -144,7 +148,10 @@ fn run() -> io::Result<()> {
     let saved = app
         .save_on_exit()
         .map_err(|e| io::Error::new(e.kind(), format!("couldn't save your game: {e}")));
-    result.and(saved)
+    match (result, saved) {
+        (Err(e), Err(s)) => Err(io::Error::new(e.kind(), format!("{e}; and {s}"))),
+        (result, saved) => result.and(saved),
+    }
 }
 
 /// `Ok(None)` for a call a signal interrupted: just go round again.
@@ -164,6 +171,10 @@ fn event_loop(
     let mut hits = Vec::new();
     // A puzzle being dealt on background threads (fully offline).
     let mut dealer: Option<mpsc::Receiver<Deal>> = None;
+    // Redraw after anything that can change the screen, and every tick for
+    // the clock, but not for every report of the mouse moving.
+    let mut dirty = true;
+    let mut drawn = Instant::now();
 
     while !stop.load(Ordering::Relaxed) {
         app.autosave();
@@ -197,16 +208,28 @@ fn event_loop(
             }
         }
 
-        term.draw(|f| hits = ui::render(f, app))?;
-
         // Poll so the timer (or the dealing spinner) refreshes on its own.
-        let tick = if app.dealing.is_some() { 50 } else { 250 };
-        if retry_interrupted(event::poll(Duration::from_millis(tick)))? != Some(true) {
+        let tick = Duration::from_millis(if app.dealing.is_some() { 50 } else { 250 });
+        if dirty || drawn.elapsed() >= tick {
+            let size = term.size()?;
+            app.set_fits(size.width >= ui::MIN_W && size.height >= ui::MIN_H);
+            term.draw(|f| hits = ui::render(f, app))?;
+            drawn = Instant::now();
+            dirty = false;
+        }
+
+        if retry_interrupted(event::poll(tick))? != Some(true) {
             continue;
         }
         let Some(event) = retry_interrupted(event::read())? else {
             continue;
         };
+        if let Event::Mouse(m) = event
+            && m.kind != MouseEventKind::Down(MouseButton::Left)
+        {
+            continue;
+        }
+        dirty = true;
         let action = match event {
             Event::Key(key) if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) => {
                 app.key_action(key.code, key.modifiers)
@@ -256,7 +279,7 @@ fn offline_check() {
         let median = times[DEALS / 2];
         let d = last.expect("at least one deal");
         println!(
-            "{:<6}  {} givens, hardest step: {:<17} ({} steps)  median of {DEALS} deals: {:.0?}: OK",
+            "{:<6}  {} givens, hardest step: {:<18} ({} steps)  median of {DEALS} deals: {:.0?}: OK",
             level.name(),
             d.givens(),
             d.grade.hardest.name(),

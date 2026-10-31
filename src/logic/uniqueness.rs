@@ -153,7 +153,8 @@ impl Grid {
             cell_list(&targets),
             digit_list(z),
         );
-        let pattern = self.rectangle_pattern(corners, floor, pair, roof, pair, Vec::new());
+        // The roof lights its extra digit, the one the step is about.
+        let pattern = self.rectangle_pattern(corners, floor, pair, roof, z, Vec::new());
         let removals = targets.into_iter().map(|c| (c, z)).collect();
         self.eliminating(Technique::UniqueRectangle2, removals, pattern, why)
     }
@@ -376,7 +377,7 @@ mod tests {
         let s = step.as_ref().unwrap();
         assert_eq!(s.technique, Technique::UniqueRectangle2);
         let mut want = marks(&[idx(0, 0), idx(0, 3)], &[1, 2], Role::Other);
-        want.extend(marks(&[idx(1, 0), idx(1, 3)], &[1, 2], Role::Key));
+        want.extend(marks(&[idx(1, 0), idx(1, 3)], &[5], Role::Key));
         assert_eq!(s.pattern.marks, want);
         assert_eq!(
             s.why,

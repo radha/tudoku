@@ -16,7 +16,7 @@ use crate::sudoku::{CELLS, N, box_of_cell, col_of, row_of};
 
 /// The most links a chain may have. A chain starts and ends strong, so
 /// its length is odd: 3, 5, ... 11.
-const MAX_LINKS: usize = 12;
+const MAX_LINKS: usize = 11;
 
 /// A candidate, numbered `cell * 9 + digit - 1`.
 type Node = usize;
@@ -534,6 +534,7 @@ fn conclusion(first: (usize, u8), last: (usize, u8), removals: &[(usize, u16)]) 
 
 #[cfg(test)]
 mod tests {
+    use super::MAX_LINKS;
     use crate::logic::testing::{dealt_states, removals, staged};
     use crate::logic::{LinkKind, Role, Step, Technique};
     use crate::sudoku::idx;
@@ -710,7 +711,7 @@ mod tests {
     }
 
     #[test]
-    fn chains_never_exceed_twelve_links() {
+    fn chains_never_exceed_eleven_links() {
         let mut longest = 0;
         dealt_states(|grid, _, _| {
             for t in [Technique::XChain, Technique::XYChain, Technique::Aic] {
@@ -719,7 +720,7 @@ mod tests {
                 }
             }
         });
-        assert!(longest <= 12, "a chain of {longest} links");
+        assert!(longest <= MAX_LINKS, "a chain of {longest} links");
         assert!(longest > 3, "only the shortest chains came up");
     }
 }

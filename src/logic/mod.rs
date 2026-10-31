@@ -15,9 +15,7 @@ mod single_digit;
 mod uniqueness;
 mod wings;
 
-use crate::sudoku::{
-    ALL_DIGITS, Board, CELLS, HOUSES, N, box_of_cell, candidates_mask, col_of, peers, row_of,
-};
+use crate::sudoku::{Board, CELLS, HOUSES, N, box_of_cell, candidates_mask, col_of, peers, row_of};
 
 /// Solving techniques, ordered from easiest to hardest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -365,13 +363,15 @@ impl Grid {
         Grid::with_candidates(values, &cands)
     }
 
-    /// A board with the given candidates. Filled cells keep none.
+    /// A board with the given candidates. Filled cells keep none, and no
+    /// cell keeps a digit placed in its row, column or box: every
+    /// technique counts on that, and hand-made notes needn't keep it.
     pub fn with_candidates(values: &Board, cands: &[u16; CELLS]) -> Grid {
         Grid {
             values: *values,
             cands: std::array::from_fn(|i| {
                 if values[i] == 0 {
-                    cands[i] & ALL_DIGITS
+                    cands[i] & candidates_mask(values, i)
                 } else {
                     0
                 }
@@ -639,7 +639,7 @@ pub(crate) mod testing {
 mod tests {
     use super::testing::{dealt_states, staged};
     use super::*;
-    use crate::sudoku::{self, idx, parse_board, test_board};
+    use crate::sudoku::{self, ALL_DIGITS, idx, parse_board, test_board};
 
     #[test]
     fn subsets_and_bits() {

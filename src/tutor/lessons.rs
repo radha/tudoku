@@ -190,7 +190,7 @@ pub fn lesson(t: Technique) -> Lesson {
                 "Then the far end is the other digit; if neither is the bridge, both are.",
                 "Any cell that sees both ends can't be the other digit.",
             ],
-            roles: ("removed digit", "bridge"),
+            roles: ("other digit", "bridge"),
         },
         SimpleColouring => Lesson {
             steps: &[
@@ -217,7 +217,7 @@ pub fn lesson(t: Technique) -> Lesson {
                 "If neither roof cell were the extra digit, the four could swap the two digits: two solutions. A puzzle has one.",
                 "So one roof cell is the extra digit. Any cell seeing both can't be it.",
             ],
-            roles: ("roof", "floor"),
+            roles: ("extra digit", "floor"),
         },
         UniqueRectangle3 => Lesson {
             steps: &[
@@ -334,7 +334,7 @@ pub fn lesson(t: Technique) -> Lesson {
                 "Find two ALSs, no shared cell, and a link digit X both fit: every X in one sees every X in the other. They can't both hold X: at least one lacks it, so holds all its other digits.",
                 "So a digit Z both fit (not X) is in one of them. A cell outside both seeing all their Zs can't be Z.",
             ],
-            roles: ("removed digit", "link digit"),
+            roles: ("Z digit", "link digit"),
         },
         AlsXyWing => Lesson {
             steps: &[
@@ -342,7 +342,7 @@ pub fn lesson(t: Technique) -> Lesson {
                 "Find ALSs A, B, C, no shared cells, and links X in A and C, Y (not X) in B and C: every X in A sees every X in C, every Y in B every Y in C.",
                 "C misses one digit at most, so holds X or Y: A lacks X or B lacks Y, and holds its others. So a Z in A and B (not X or Y) is in one. Cells outside seeing all their Zs can't be Z.",
             ],
-            roles: ("removed digit", "link digit"),
+            roles: ("Z digit", "link digit"),
         },
         SueDeCoq => Lesson {
             steps: &[
@@ -358,7 +358,7 @@ pub fn lesson(t: Technique) -> Lesson {
                 "The stem is one digit, so that digit's petal lacks it, and (no digit repeating) holds all its others.",
                 "So a digit Z every petal fits, and the stem doesn't, is in a petal. A cell outside seeing all petal Zs can't be Z.",
             ],
-            roles: ("removed digit", "stem & petals"),
+            roles: ("Z digit", "stem & petals"),
         },
     }
 }

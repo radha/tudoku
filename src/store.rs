@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -20,16 +20,46 @@ const STATS_FILE: &str = "stats.json";
 /// Bumped when the level names change. Version 0 is the five-level build.
 const STATS_VERSION: u32 = 1;
 
-/// Per-level record. Best times only count games solved without the tutor.
+/// Per-level record. Best times, averages and streaks only count games
+/// solved without the tutor; files from before averages and streaks read
+/// as having none yet.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LevelStats {
     pub solved: u32,
     pub best_ms: Option<u64>,
+    /// Tutor-free solves, and their times added up, for the average.
+    #[serde(default)]
+    pub clean: u32,
+    #[serde(default)]
+    pub clean_ms: u64,
+    /// Tutor-free solves in a row, now and at most.
+    #[serde(default)]
+    pub streak: u32,
+    #[serde(default)]
+    pub best_streak: u32,
 }
 
 impl LevelStats {
     pub fn best(&self) -> Option<Duration> {
         self.best_ms.map(Duration::from_millis)
+    }
+
+    /// The mean time of the tutor-free solves.
+    pub fn average(&self) -> Option<Duration> {
+        (self.clean > 0).then(|| Duration::from_millis(self.clean_ms / u64::from(self.clean)))
+    }
+
+    /// Fold in the record of a level that now goes by the same name.
+    fn merge(&mut self, other: LevelStats) {
+        self.solved = self.solved.saturating_add(other.solved);
+        self.best_ms = match (self.best_ms, other.best_ms) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        self.clean = self.clean.saturating_add(other.clean);
+        self.clean_ms = self.clean_ms.saturating_add(other.clean_ms);
+        self.streak = self.streak.max(other.streak);
+        self.best_streak = self.best_streak.max(other.best_streak);
     }
 }
 
@@ -44,16 +74,32 @@ impl Stats {
     }
 
     /// Count a solve. Returns true when it set a new best time, which only
-    /// a solve without help (`helped == 0`) can do.
+    /// a solve without help (`helped == 0`) can do. A helped solve ends
+    /// the streak.
     pub fn record(&mut self, level: Difficulty, time: Duration, helped: u32) -> bool {
         let entry = self.levels.entry(level).or_default();
         entry.solved = entry.solved.saturating_add(1);
+        if helped > 0 {
+            entry.streak = 0;
+            return false;
+        }
         let ms = u64::try_from(time.as_millis()).unwrap_or(u64::MAX);
-        let is_best = helped == 0 && entry.best_ms.is_none_or(|best| ms < best);
+        entry.clean = entry.clean.saturating_add(1);
+        entry.clean_ms = entry.clean_ms.saturating_add(ms);
+        entry.streak = entry.streak.saturating_add(1);
+        entry.best_streak = entry.best_streak.max(entry.streak);
+        let is_best = entry.best_ms.is_none_or(|best| ms < best);
         if is_best {
             entry.best_ms = Some(ms);
         }
         is_best
+    }
+
+    /// A game at `level` was given up: its streak starts over.
+    pub fn abandon(&mut self, level: Difficulty) {
+        if let Some(entry) = self.levels.get_mut(&level) {
+            entry.streak = 0;
+        }
     }
 }
 
@@ -88,16 +134,19 @@ impl StatsFile {
                 _ => Difficulty::from_name(&name),
             };
             if let Some(level) = level {
-                let entry = stats.levels.entry(level).or_default();
-                entry.solved = entry.solved.saturating_add(level_stats.solved);
-                entry.best_ms = match (entry.best_ms, level_stats.best_ms) {
-                    (Some(a), Some(b)) => Some(a.min(b)),
-                    (a, b) => a.or(b),
-                };
+                stats.levels.entry(level).or_default().merge(level_stats);
             }
         }
         stats
     }
+}
+
+/// What reading a file we wrote turned up.
+enum Stored<T> {
+    Missing,
+    /// Not what we write: not text, not JSON, or the wrong shape.
+    Damaged,
+    Fine(T),
 }
 
 /// Where saves live. A store without a directory (no home, or in tests)
@@ -129,27 +178,61 @@ impl Store {
         self.dir.as_ref().map(|d| d.join(file))
     }
 
-    fn read<T: for<'de> Deserialize<'de>>(&self, file: &str) -> Option<T> {
-        let text = fs::read_to_string(self.path(file)?).ok()?;
-        serde_json::from_str(&text).ok()
+    /// Read and parse `file`. `Err` means it couldn't be read at all.
+    fn read<T: for<'de> Deserialize<'de>>(&self, file: &str) -> io::Result<Stored<T>> {
+        let Some(path) = self.path(file) else {
+            return Ok(Stored::Missing);
+        };
+        match fs::read_to_string(path) {
+            Ok(text) => Ok(serde_json::from_str(&text).map_or(Stored::Damaged, Stored::Fine)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Stored::Missing),
+            Err(e) if e.kind() == io::ErrorKind::InvalidData => Ok(Stored::Damaged),
+            Err(e) => Err(e),
+        }
     }
 
-    fn write<T: Serialize>(&self, file: &str, value: &T) -> io::Result<()> {
+    fn write<T: Serialize>(&self, file: &str, value: &T, durable: bool) -> io::Result<()> {
         let Some(path) = self.path(file) else {
             return Ok(());
         };
         let json = serde_json::to_string(value).map_err(io::Error::other)?;
-        write_atomic(&path, json.as_bytes())
+        write_atomic(&path, json.as_bytes(), durable)
     }
 
-    /// The saved game, if there is one and it checks out. A damaged or
-    /// stale save is ignored rather than trusted.
+    /// Move a file we can't use out of the way, keeping it for whoever
+    /// wants to look, and never over an earlier one.
+    fn set_aside(&self, file: &str) {
+        let Some(path) = self.path(file) else { return };
+        let free = (1..100)
+            .map(|n| match n {
+                1 => path.with_extension("json.damaged"),
+                n => path.with_extension(format!("json.damaged-{n}")),
+            })
+            .find(|p| !p.exists());
+        if let Some(to) = free {
+            let _ = fs::rename(&path, to);
+        }
+    }
+
+    /// The saved game, if there is one and it checks out. A damaged save,
+    /// or one from a newer tudoku, is moved aside as `game.json.damaged`
+    /// rather than trusted or overwritten.
     pub fn load_game(&self) -> Option<Game> {
-        Game::restore(self.read::<SavedGame>(GAME_FILE)?).ok()
+        let game = match self.read::<SavedGame>(GAME_FILE).ok()? {
+            Stored::Missing => return None,
+            Stored::Damaged => None,
+            Stored::Fine(saved) => Game::restore(saved).ok(),
+        };
+        if game.is_none() {
+            self.set_aside(GAME_FILE);
+        }
+        game
     }
 
+    /// Saved after every move, so this one skips the flush to disk: an OS
+    /// crash can lose the last few moves, never the best times.
     pub fn save_game(&self, game: &Game) -> io::Result<()> {
-        self.write(GAME_FILE, &game.snapshot())
+        self.write(GAME_FILE, &game.snapshot(), false)
     }
 
     pub fn clear_game(&self) -> io::Result<()> {
@@ -159,39 +242,51 @@ impl Store {
         }
     }
 
-    /// Stats as they are on disk now (`None` for a store that keeps
-    /// nothing). An unreadable file is moved aside to `stats.json.damaged`
-    /// rather than silently overwritten by the next solve.
-    pub fn load_stats(&self) -> Option<Stats> {
-        let path = self.path(STATS_FILE)?;
-        let Ok(text) = fs::read_to_string(&path) else {
-            return Some(Stats::default());
-        };
-        Some(match serde_json::from_str::<StatsFile>(&text) {
-            Ok(file) => file.into_stats(),
-            Err(_) => {
-                let _ = fs::rename(&path, path.with_extension("json.damaged"));
+    /// Stats as they are on disk now: `Ok(None)` for a store that keeps
+    /// nothing, empty ones before the first solve. A damaged file is moved
+    /// aside to `stats.json.damaged` rather than silently overwritten by
+    /// the next solve. A file that can't be read at all is an error, so
+    /// nobody writes over records they never saw.
+    pub fn load_stats(&self) -> io::Result<Option<Stats>> {
+        if self.dir.is_none() {
+            return Ok(None);
+        }
+        Ok(Some(match self.read::<StatsFile>(STATS_FILE)? {
+            Stored::Missing => Stats::default(),
+            Stored::Fine(file) => file.into_stats(),
+            Stored::Damaged => {
+                self.set_aside(STATS_FILE);
                 Stats::default()
             }
-        })
+        }))
     }
 
     pub fn save_stats(&self, stats: &Stats) -> io::Result<()> {
-        self.write(STATS_FILE, &StatsFile::from_stats(stats))
+        self.write(STATS_FILE, &StatsFile::from_stats(stats), true)
     }
 }
 
 /// Write to a temporary file and rename it into place, so a crash mid-write
 /// never leaves a truncated save behind. Each write gets its own temporary
-/// name, so two running copies of tudoku can't clobber each other's.
-fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+/// name, so two running copies of tudoku can't clobber each other's. A
+/// `durable` write reaches the disk before it replaces the old file, so
+/// even a power cut leaves one or the other whole.
+fn write_atomic(path: &Path, bytes: &[u8], durable: bool) -> io::Result<()> {
     static WRITES: AtomicU64 = AtomicU64::new(0);
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
     let n = WRITES.fetch_add(1, Ordering::Relaxed);
     let tmp = path.with_extension(format!("json.{}-{n}.tmp", std::process::id()));
-    let written = fs::write(&tmp, bytes).and_then(|()| fs::rename(&tmp, path));
+    let write = || -> io::Result<()> {
+        let mut file = fs::File::create(&tmp)?;
+        file.write_all(bytes)?;
+        if durable {
+            file.sync_all()?;
+        }
+        Ok(())
+    };
+    let written = write().and_then(|()| fs::rename(&tmp, path));
     if written.is_err() {
         let _ = fs::remove_file(&tmp);
     }
@@ -233,7 +328,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::at(dir.path());
         assert!(store.load_game().is_none());
-        assert_eq!(store.load_stats(), Some(Stats::default()));
+        assert_eq!(store.load_stats().unwrap(), Some(Stats::default()));
 
         let mut g = game();
         g.enter_digit(4);
@@ -244,7 +339,7 @@ mod tests {
         let mut stats = Stats::default();
         stats.record(Difficulty::Zen, Duration::from_secs(61), 0);
         store.save_stats(&stats).unwrap();
-        assert_eq!(store.load_stats(), Some(stats));
+        assert_eq!(store.load_stats().unwrap(), Some(stats));
         let text = fs::read_to_string(dir.path().join(STATS_FILE)).unwrap();
         assert!(text.contains("\"Zen\""), "levels are keyed by name: {text}");
 
@@ -258,7 +353,7 @@ mod tests {
         // Written by the five-level build: Easy, Medium, Hard, Expert, Zen.
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join(STATS_FILE), r#"{"levels":{"Easy":{"solved":3,"best_ms":1000},"Hard":{"solved":1,"best_ms":594328},"Expert":{"solved":2,"best_ms":2000},"Zen":{"solved":32,"best_ms":330137}}}"#).unwrap();
-        let stats = Store::at(dir.path()).load_stats().unwrap();
+        let stats = Store::at(dir.path()).load_stats().unwrap().unwrap();
         assert_eq!(
             stats.level(Difficulty::Easy),
             LevelStats::default(),
@@ -268,7 +363,8 @@ mod tests {
             stats.level(Difficulty::Medium),
             LevelStats {
                 solved: 1,
-                best_ms: Some(594328)
+                best_ms: Some(594328),
+                ..LevelStats::default()
             }
         );
         assert_eq!(stats.level(Difficulty::Hard).solved, 2);
@@ -276,7 +372,8 @@ mod tests {
             stats.level(Difficulty::Master),
             LevelStats {
                 solved: 32,
-                best_ms: Some(330137)
+                best_ms: Some(330137),
+                ..LevelStats::default()
             }
         );
         assert_eq!(stats.level(Difficulty::Zen), LevelStats::default());
@@ -292,14 +389,14 @@ mod tests {
         store.save_stats(&stats).unwrap();
         let text = fs::read_to_string(dir.path().join(STATS_FILE)).unwrap();
         assert!(text.contains("\"version\":1"), "{text}");
-        assert_eq!(store.load_stats(), Some(stats), "Hard stays Hard");
+        assert_eq!(store.load_stats().unwrap(), Some(stats), "Hard stays Hard");
     }
 
     #[test]
     fn unknown_level_names_are_skipped_not_fatal() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join(STATS_FILE), r#"{"version":1,"levels":{"Nope":{"solved":1,"best_ms":null},"Zen":{"solved":4,"best_ms":9}}}"#).unwrap();
-        let stats = Store::at(dir.path()).load_stats().unwrap();
+        let stats = Store::at(dir.path()).load_stats().unwrap().unwrap();
         assert_eq!(stats.level(Difficulty::Zen).solved, 4);
     }
 
@@ -310,11 +407,90 @@ mod tests {
         fs::write(dir.path().join(GAME_FILE), "{ not json").unwrap();
         fs::write(dir.path().join(STATS_FILE), "[1, 2").unwrap();
         assert!(store.load_game().is_none());
-        assert_eq!(store.load_stats(), Some(Stats::default()));
+        assert_eq!(store.load_stats().unwrap(), Some(Stats::default()));
         assert!(
             dir.path().join("stats.json.damaged").exists(),
             "a damaged stats file is kept, not overwritten"
         );
+        assert!(
+            dir.path().join("game.json.damaged").exists(),
+            "so is a damaged save"
+        );
+        // A second damaged file never replaces the first one set aside.
+        fs::write(dir.path().join(STATS_FILE), "{").unwrap();
+        store.load_stats().unwrap();
+        let first = fs::read_to_string(dir.path().join("stats.json.damaged")).unwrap();
+        assert_eq!(first, "[1, 2");
+        assert!(dir.path().join("stats.json.damaged-2").exists());
+    }
+
+    #[test]
+    fn stats_that_are_not_text_are_set_aside_too() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join(STATS_FILE), b"{\"levels\":\xff}").unwrap();
+        let store = Store::at(dir.path());
+        assert_eq!(store.load_stats().unwrap(), Some(Stats::default()));
+        assert!(dir.path().join("stats.json.damaged").exists());
+    }
+
+    #[test]
+    fn stats_that_cannot_be_read_are_an_error_not_a_blank_slate() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join(STATS_FILE)).unwrap();
+        assert!(Store::at(dir.path()).load_stats().is_err());
+        assert!(dir.path().join(STATS_FILE).is_dir(), "left where it is");
+    }
+
+    #[test]
+    fn a_save_from_a_newer_tudoku_is_kept_aside() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path());
+        let mut saved = serde_json::to_value(game().snapshot()).unwrap();
+        saved["version"] = 99.into();
+        fs::write(dir.path().join(GAME_FILE), saved.to_string()).unwrap();
+        assert!(store.load_game().is_none());
+        assert!(dir.path().join("game.json.damaged").exists());
+        assert!(!dir.path().join(GAME_FILE).exists());
+    }
+
+    #[test]
+    fn averages_and_streaks_count_tutor_free_solves() {
+        let mut stats = Stats::default();
+        let secs = Duration::from_secs;
+        assert_eq!(stats.level(Difficulty::Easy).average(), None);
+        stats.record(Difficulty::Easy, secs(100), 0);
+        stats.record(Difficulty::Easy, secs(200), 0);
+        stats.record(Difficulty::Easy, secs(10), 1); // helped: no average, streak over
+        stats.record(Difficulty::Easy, secs(300), 0);
+        let easy = stats.level(Difficulty::Easy);
+        assert_eq!(easy.solved, 4);
+        assert_eq!(easy.average(), Some(secs(200)));
+        assert_eq!((easy.streak, easy.best_streak), (1, 2));
+        stats.abandon(Difficulty::Easy);
+        let easy = stats.level(Difficulty::Easy);
+        assert_eq!((easy.streak, easy.best_streak), (0, 2));
+        stats.abandon(Difficulty::Zen); // nothing to end
+        assert_eq!(stats.level(Difficulty::Zen), LevelStats::default());
+    }
+
+    #[test]
+    fn stats_from_before_averages_load_with_none() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join(STATS_FILE),
+            r#"{"version":1,"levels":{"Zen":{"solved":4,"best_ms":9000}}}"#,
+        )
+        .unwrap();
+        let zen = Store::at(dir.path())
+            .load_stats()
+            .unwrap()
+            .unwrap()
+            .level(Difficulty::Zen);
+        assert_eq!(
+            (zen.solved, zen.best_ms, zen.clean, zen.streak),
+            (4, Some(9000), 0, 0)
+        );
+        assert_eq!(zen.average(), None);
     }
 
     #[test]
@@ -322,7 +498,7 @@ mod tests {
         let store = Store::none();
         store.save_game(&game()).unwrap();
         assert!(store.load_game().is_none());
-        assert_eq!(store.load_stats(), None);
+        assert_eq!(store.load_stats().unwrap(), None);
         store.clear_game().unwrap();
     }
 
@@ -338,7 +514,7 @@ mod tests {
                         let mut stats = Stats::default();
                         stats.record(Difficulty::Easy, Duration::from_secs(t * 1000 + i), 0);
                         store.save_stats(&stats).expect("no shared temp file");
-                        assert!(store.load_stats().is_some());
+                        assert!(store.load_stats().unwrap().is_some());
                     }
                 });
             }

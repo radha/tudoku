@@ -183,7 +183,7 @@ pub(super) fn draw_pane(frame: &mut Frame, area: Rect, tutor: &Tutor, hits: &mut
     let ink = Style::default().fg(INK);
     let muted = Style::default().fg(MUTED);
     let mut lines = vec![Line::from("")];
-    if tutor.mode == NoteMode::PairMarks {
+    if tutor.mode == NoteMode::PairMarks && tutor.stage != TutorStage::TryFirst {
         para(
             &mut lines,
             "Going by placed digits — your notes aren't filled in yet.",
@@ -192,6 +192,36 @@ pub(super) fn draw_pane(frame: &mut Frame, area: Rect, tutor: &Tutor, hits: &mut
         lines.push(Line::from(""));
     }
     let keys = match (&tutor.advice, tutor.stage) {
+        (_, TutorStage::TryFirst) => {
+            para(&mut lines, "Try first.", ink.add_modifier(Modifier::BOLD));
+            lines.push(Line::from(""));
+            para(
+                &mut lines,
+                "Note every digit that still fits in each empty cell, then look again: \
+                 most strategies need the full set of candidates.",
+                ink,
+            );
+            lines.push(Line::from(""));
+            para(
+                &mut lines,
+                "Naming one costs the puzzle its best time.",
+                muted,
+            );
+            vec![
+                Key {
+                    key: "t",
+                    what: "name a strategy",
+                    action: Action::Tutor,
+                    back: None,
+                },
+                Key {
+                    key: "Esc",
+                    what: "I'll keep at it",
+                    action: Action::CloseTutor,
+                    back: None,
+                },
+            ]
+        }
         (Advice::Step(step), TutorStage::Nudge) => {
             lines.push(Line::styled("Look for", ink));
             para(
@@ -366,12 +396,15 @@ fn legend(lines: &mut Vec<Line<'static>>, lesson: &Lesson, step: &Step) {
         (Role::Key, lesson.roles.0, ACCENT),
         (Role::Other, lesson.roles.1, VIOLET),
     ] {
-        let mark = step.pattern.marks.iter().find(|m| m.role == role);
-        if let Some(m) = mark.filter(|_| !name.is_empty()) {
-            lines.push(Line::from(vec![
-                Span::styled(format!(" {} ", m.digit), chip(fill)),
-                Span::styled(format!(" {name}"), muted),
-            ]));
+        let digits = step
+            .pattern
+            .marks
+            .iter()
+            .filter(|m| m.role == role)
+            .fold(0u16, |mask, m| mask | 1 << m.digit);
+        if digits != 0 && !name.is_empty() {
+            let chip = vec![Span::styled(format!(" {} ", spaced(digits)), chip(fill))];
+            chip_line(lines, chip, name);
         }
     }
     if let (Some(d), false) = (step.pattern.digit, step.pattern.placed.is_empty()) {
@@ -383,24 +416,45 @@ fn legend(lines: &mut Vec<Line<'static>>, lesson: &Lesson, step: &Step) {
             Span::styled(" rules cells out", muted),
         ]));
     }
-    lines.push(match &step.effect {
-        Effect::Place { digit, .. } => Line::from(vec![
+    match &step.effect {
+        Effect::Place { digit, .. } => lines.push(Line::from(vec![
             Span::styled(format!(" {digit} "), chip(GREEN)),
             Span::styled(" placed", muted),
-        ]),
+        ])),
         Effect::Eliminate(removals) => {
-            let digit = removals
-                .first()
-                .map_or(0, |&(_, mask)| mask.trailing_zeros());
+            let digits = removals.iter().fold(0, |all, &(_, mask)| all | mask);
             let red = Style::default().fg(RED).bg(ERR_BG).add_modifier(bold);
-            Line::from(vec![
+            let chip = vec![
                 Span::styled(" ", red),
-                Span::styled(digit.to_string(), red.add_modifier(Modifier::CROSSED_OUT)),
+                Span::styled(spaced(digits), red.add_modifier(Modifier::CROSSED_OUT)),
                 Span::styled(" ", red),
-                Span::styled(" removed", muted),
-            ])
+            ];
+            chip_line(lines, chip, "removed");
         }
-    });
+    }
+}
+
+/// The digits in `mask`, a space apart: "1 6".
+fn spaced(mask: u16) -> String {
+    (1..=9u8)
+        .filter(|d| mask & 1 << d != 0)
+        .map(|d| d.to_string())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// A legend line: a chip, then what it stands for, which goes on the line
+/// below when a chip with many digits leaves no room beside it.
+fn chip_line(lines: &mut Vec<Line<'static>>, mut chip: Vec<Span<'static>>, name: &str) {
+    let muted = Style::default().fg(MUTED);
+    let width: usize = chip.iter().map(Span::width).sum();
+    if width + 1 + name.chars().count() <= TEXT_W {
+        chip.push(Span::styled(format!(" {name}"), muted));
+        lines.push(Line::from(chip));
+    } else {
+        lines.push(Line::from(chip));
+        lines.push(Line::styled(format!(" {name}"), muted));
+    }
 }
 
 /// The header over a worked example: an EXAMPLE badge, so the sample
@@ -694,9 +748,11 @@ pub(super) fn draw_focus_board(
             slot(x, y, d)
         };
         let ((fx, fy), (tx, ty)) = (at(link.from), at(link.to));
-        let (color, horizontal, vertical) = match link.kind {
-            LinkKind::Strong => (ACCENT, '━', '┃'),
-            LinkKind::Weak => (VIOLET, '╍', '╏'),
+        // Corners go down-right, up-right, down-left, up-left. There are
+        // no dashed ones, so a weak link turns on a light corner.
+        let (color, horizontal, vertical, corners) = match link.kind {
+            LinkKind::Strong => (ACCENT, '━', '┃', ['┓', '┛', '┏', '┗']),
+            LinkKind::Weak => (VIOLET, '╍', '╏', ['┐', '┘', '┌', '└']),
         };
         let mut line = |x: u16, y: u16, ch: char| {
             buf[(x, y)].set_char(ch).set_fg(color);
@@ -706,10 +762,10 @@ pub(super) fn draw_focus_board(
         }
         if fx != tx && fy != ty {
             let corner = match (tx > fx, ty > fy) {
-                (true, true) => '┐',
-                (true, false) => '┘',
-                (false, true) => '┌',
-                (false, false) => '└',
+                (true, true) => corners[0],
+                (true, false) => corners[1],
+                (false, true) => corners[2],
+                (false, false) => corners[3],
             };
             line(tx, fy, corner);
         }
@@ -1108,6 +1164,40 @@ pub(crate) mod tests {
             let pair = format!("{} {}", key.key, key.what);
             assert!(footer.contains(&pair), "{footer}");
             assert!(pane.contains(key.what), "{pane}");
+        }
+    }
+
+    #[test]
+    fn the_legend_lists_every_digit_and_fits_the_smallest_pane() {
+        for &t in Technique::ALL {
+            let app = app_explaining(t, 2);
+            let (lines, _) = draw(&app, MIN_W, MIN_H);
+            let pane = panel_text(&lines, MIN_W);
+            assert!(!pane.contains('…'), "{t:?} is cut short: {pane}");
+            let step = example(t).unwrap().step;
+            let roles = lesson(t).roles;
+            for (role, name) in [(Role::Key, roles.0), (Role::Other, roles.1)] {
+                let digits = step
+                    .pattern
+                    .marks
+                    .iter()
+                    .filter(|m| m.role == role)
+                    .fold(0u16, |mask, m| mask | 1 << m.digit);
+                if !name.is_empty() {
+                    // Beside the chip, or on the line below it.
+                    let chip = format!("{}  {name}", spaced(digits));
+                    let below = format!("{} {name}", spaced(digits));
+                    assert!(
+                        pane.contains(&chip) || pane.contains(&below),
+                        "{t:?}: {chip:?} in {pane}"
+                    );
+                }
+            }
+            if let Effect::Eliminate(removals) = &step.effect {
+                let digits = removals.iter().fold(0, |all, &(_, mask)| all | mask);
+                let chip = format!("{}  removed", spaced(digits));
+                assert!(pane.contains(&chip), "{t:?}: {chip:?} in {pane}");
+            }
         }
     }
 

@@ -11,7 +11,8 @@ cargo run --release
 ```
 
 Requires a terminal at least **103x39** (every cell gets its own frame, and
-the grid is drawn square on typical 2:1 fonts). A 24-bit-color terminal
+the grid is drawn square on typical 2:1 fonts). Shrink the window below that
+mid-game and the game pauses until it's big enough again. A 24-bit-color terminal
 such as Ghostty, kitty, WezTerm or iTerm2 looks best; mouse support needs
 one that reports clicks (most modern ones do).
 
@@ -39,20 +40,27 @@ the background; every level typically takes well under a second.
 
 Your game is saved after every move, and every few seconds while you
 think, so quitting, closing the window or a crash never costs you a
-puzzle. Next launch, the title screen offers **Continue** (Enter or `c`);
-picking a level instead starts fresh.
+puzzle. `m` takes you back to the title screen mid-game, and next launch
+the title screen offers **Continue** (Enter or `c`). Dealing a new puzzle
+over a game with anything on it asks first.
 
-Best times are kept per level and only count puzzles solved **without
-the tutor**. Everything lives in two small JSON files:
+Best times, average times and streaks are kept per level and only count
+puzzles solved **without the tutor**; a streak also ends when you leave a
+game for a new one. **Stats** (`7`) on the title screen shows them all.
+Everything lives in two small JSON files:
 
 - Linux: `~/.local/share/tudoku/` (or `$XDG_DATA_HOME/tudoku/`)
 - macOS: `~/Library/Application Support/tudoku/`
 
-Delete that folder to start over.
+Delete that folder to start over. A file tudoku can't make sense of is
+kept beside it as `*.damaged` rather than overwritten.
 
 ## Tutor
 
-Stuck? Press `t`. The tutor reads your board and names the easiest
+Stuck? Press `t`. If some empty cell has no notes yet, the tutor first
+asks you to try on your own: note every digit that still fits, then look
+again. That costs nothing. Press `t` again (or straight away, once your
+notes are full) and it reads your board and names the easiest
 strategy that makes progress, and only its name ("Look for HIDDEN
 SINGLE"), so you can still find it yourself. The board stays in play
 while the nudge is up.
@@ -75,8 +83,9 @@ pair marks, goes by the placed digits alone and says so; it can still
 place a digit for you then, but leaves eliminations to you. If no
 strategy it knows applies, it offers to place one correct digit.
 
-Every opening of the tutor counts on the header's 🎓 counter, and a
-puzzle you asked it about can't set a best time.
+Every time the tutor names a strategy (or a mistake) counts on the
+header's 🎓 counter, and a puzzle you asked it about can't set a best
+time.
 
 ### Strategies
 
@@ -105,8 +114,8 @@ level, easiest first, with a one-line gist of the highlighted one.
   strategy, so you can read them all in order.
 - `Esc` goes back to the map, and from there to the title screen.
 
-It's only on the title screen, and reading it doesn't touch your saved
-game, your best times or the 🎓 counter.
+It's on the title screen (`m` gets you there mid-game), and reading it
+doesn't touch your saved game, your best times or the 🎓 counter.
 
 ## Controls
 
@@ -119,33 +128,41 @@ game, your best times or the 🎓 counter.
 | n                              | toggle pencil-mark mode                   |
 | 0 / x / e / Backspace / Delete | erase cell                                |
 | u / Ctrl+Z                     | undo                                      |
+| r / Ctrl+R / Ctrl+Y            | redo                                      |
 | t                              | tutor: names it, explains it, shows it    |
 | a                              | tutor: do it for me                       |
 | N (capital n)                  | new puzzle, same difficulty               |
+| R (capital r)                  | clear the board back to its givens        |
 | d                              | difficulty picker                         |
 | p                              | pause (automatic when you switch away)    |
+| m                              | back to the title screen (game saved)     |
 | ? / F1                         | help                                      |
-| q                              | quit (your game is saved)                 |
+| q / Ctrl+C                     | quit (your game is saved)                 |
 | Esc                            | close popup or tutor, see finished board  |
+| w                              | on a finished board: its result again     |
+| y / n                          | answer "are you sure?"                    |
 
 On the title screen: `c` or `Enter` continues a saved game; `1-5`,
-arrows/hjkl + `Enter`, or a click starts a level; `6` opens the library.
+`↑↓`/`jk` + `Enter`, or a click starts a level; `6` opens the library and
+`7` the stats.
 
 ### Mouse
 
-Everything is clickable: cells to select, the number pad to fill, and all
-action buttons (Notes, Undo, Tutor, Erase, New, Level, Pause, Help), and
-the keys in the tutor's pane.
-Clicking outside a popup closes it, just like Esc.
+Cells to select, the number pad to fill, the action buttons (Notes, Undo,
+Tutor, Erase, New, Level, Pause, Help), the keys in the tutor's pane and
+the buttons in popups are all clickable; redo, starting over and the title
+screen are keyboard-only. Clicking outside a popup closes it, just like
+Esc.
 
 ## Features
 
 - 5 difficulty levels graded by solving technique, all pure logic
-- Pencil marks, undo, erase
+- Pencil marks, undo and redo, erase, start over
 - A tutor that names the next strategy, shows it on your board and can
   apply it, with a 🎓 counter of how often you asked
 - Mistake highlighting, remaining-digit counters, progress bar, timer
-- Autosave and resume, tutor-free best times per level
+- Autosave and resume, tutor-free best and average times and streaks
+  per level
 - Pause that hides the board and stops the clock, automatically when
   the terminal loses focus
 - Win screen with time / mistakes / tutor use and your record

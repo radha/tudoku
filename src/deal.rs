@@ -154,7 +154,7 @@ pub fn deal<R: Rng>(level: Difficulty, rng: &mut R) -> Deal {
 }
 
 /// [`deal`] on every core at once; the first worker to succeed wins. The
-/// rarest level (Master) needs ~10 attempts of ~0.8ms each on average.
+/// rarest level (Master) needs ~15 attempts of ~0.8ms each on average.
 /// The others finish their attempts before this returns, a millisecond
 /// or two, so a worker that panics takes the deal down with it, where the
 /// caller sees it, rather than printing over the game later.
