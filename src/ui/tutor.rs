@@ -17,10 +17,11 @@ use super::{
     grid_glyph, popup_block, push_hit,
 };
 use crate::app::{Action, EXAMPLE_STAGES, Tutor, TutorStage};
-use crate::logic::{Effect, LinkKind, Role, Step, Technique, digit_list, rc};
+use crate::logic::{Effect, LinkKind, Role, Step, Technique};
 use crate::sudoku::{Board, CELLS, HOUSES};
 use crate::tutor::examples::Example;
 use crate::tutor::lessons::{Lesson, lesson};
+use crate::tutor::words::{self, EffectText, LegendKind};
 use crate::tutor::{Advice, NoteMode};
 
 /// Columns of text: the panel's width, less the border and a column of
@@ -184,29 +185,20 @@ pub(super) fn draw_pane(frame: &mut Frame, area: Rect, tutor: &Tutor, hits: &mut
     let muted = Style::default().fg(MUTED);
     let mut lines = vec![Line::from("")];
     if tutor.mode == NoteMode::PairMarks && tutor.stage != TutorStage::TryFirst {
-        para(
-            &mut lines,
-            "Going by placed digits — your notes aren't filled in yet.",
-            muted,
-        );
+        para(&mut lines, words::PAIR_MARKS, muted);
         lines.push(Line::from(""));
     }
     let keys = match (&tutor.advice, tutor.stage) {
         (_, TutorStage::TryFirst) => {
-            para(&mut lines, "Try first.", ink.add_modifier(Modifier::BOLD));
-            lines.push(Line::from(""));
             para(
                 &mut lines,
-                "Note every digit that still fits in each empty cell, then look again: \
-                 most strategies need the full set of candidates.",
-                ink,
+                words::TRY_FIRST,
+                ink.add_modifier(Modifier::BOLD),
             );
             lines.push(Line::from(""));
-            para(
-                &mut lines,
-                "Naming one costs the puzzle its best time.",
-                muted,
-            );
+            para(&mut lines, words::TRY_FIRST_DETAIL, ink);
+            lines.push(Line::from(""));
+            para(&mut lines, words::TRY_FIRST_COST, muted);
             vec![
                 Key {
                     key: "t",
@@ -271,20 +263,15 @@ pub(super) fn draw_pane(frame: &mut Frame, area: Rect, tutor: &Tutor, hits: &mut
             keys
         }
         (Advice::WrongDigit(cell), _) => {
-            let text = format!("{} is wrong: clear it first.", rc(*cell));
-            para(&mut lines, &text, ink);
+            para(&mut lines, &words::wrong_digit(*cell), ink);
             vec![BACK]
         }
         (Advice::WrongNotes(cell), _) => {
-            let text = format!(
-                "Your notes in {} cross out something that still fits.",
-                rc(*cell)
-            );
-            para(&mut lines, &text, ink);
+            para(&mut lines, &words::wrong_notes(*cell), ink);
             vec![BACK]
         }
         (Advice::Stuck, _) => {
-            para(&mut lines, "Nothing in my book applies here.", ink);
+            para(&mut lines, words::STUCK, ink);
             let place = Key {
                 key: "a",
                 what: "place one digit",
@@ -392,44 +379,38 @@ fn legend(lines: &mut Vec<Line<'static>>, lesson: &Lesson, step: &Step) {
     let muted = Style::default().fg(MUTED);
     let bold = Modifier::BOLD;
     let chip = |fill| Style::default().fg(BG).bg(fill).add_modifier(bold);
-    for (role, name, fill) in [
-        (Role::Key, lesson.roles.0, ACCENT),
-        (Role::Other, lesson.roles.1, VIOLET),
-    ] {
-        let digits = step
-            .pattern
-            .marks
-            .iter()
-            .filter(|m| m.role == role)
-            .fold(0u16, |mask, m| mask | 1 << m.digit);
-        if digits != 0 && !name.is_empty() {
-            let chip = vec![Span::styled(format!(" {} ", spaced(digits)), chip(fill))];
-            chip_line(lines, chip, name);
-        }
-    }
-    if let (Some(d), false) = (step.pattern.digit, step.pattern.placed.is_empty()) {
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!(" {d} "),
-                Style::default().fg(INK).bg(PAT_BG).add_modifier(bold),
-            ),
-            Span::styled(" rules cells out", muted),
-        ]));
-    }
-    match &step.effect {
-        Effect::Place { digit, .. } => lines.push(Line::from(vec![
-            Span::styled(format!(" {digit} "), chip(GREEN)),
-            Span::styled(" placed", muted),
-        ])),
-        Effect::Eliminate(removals) => {
-            let digits = removals.iter().fold(0, |all, &(_, mask)| all | mask);
-            let red = Style::default().fg(RED).bg(ERR_BG).add_modifier(bold);
-            let chip = vec![
-                Span::styled(" ", red),
-                Span::styled(spaced(digits), red.add_modifier(Modifier::CROSSED_OUT)),
-                Span::styled(" ", red),
-            ];
-            chip_line(lines, chip, "removed");
+    for entry in words::legend(lesson, step) {
+        let digits = spaced(entry.digits);
+        match entry.kind {
+            LegendKind::Key | LegendKind::Other => {
+                let fill = if entry.kind == LegendKind::Key {
+                    ACCENT
+                } else {
+                    VIOLET
+                };
+                let c = vec![Span::styled(format!(" {digits} "), chip(fill))];
+                chip_line(lines, c, &entry.label);
+            }
+            LegendKind::RulesOut => lines.push(Line::from(vec![
+                Span::styled(
+                    format!(" {digits} "),
+                    Style::default().fg(INK).bg(PAT_BG).add_modifier(bold),
+                ),
+                Span::styled(format!(" {}", entry.label), muted),
+            ])),
+            LegendKind::Placed => lines.push(Line::from(vec![
+                Span::styled(format!(" {digits} "), chip(GREEN)),
+                Span::styled(format!(" {}", entry.label), muted),
+            ])),
+            LegendKind::Removed => {
+                let red = Style::default().fg(RED).bg(ERR_BG).add_modifier(bold);
+                let c = vec![
+                    Span::styled(" ", red),
+                    Span::styled(digits, red.add_modifier(Modifier::CROSSED_OUT)),
+                    Span::styled(" ", red),
+                ];
+                chip_line(lines, c, &entry.label);
+            }
         }
     }
 }
@@ -493,27 +474,21 @@ pub(super) fn explain_header(t: Technique, stage: u8) -> (Line<'static>, Line<'s
 /// What the step does, by cell name.
 fn effect_lines(lines: &mut Vec<Line<'static>>, step: &Step) {
     let ink = Style::default().fg(INK);
-    match &step.effect {
-        Effect::Place { cell, digit } => lines.push(Line::styled(
-            format!("{} is {digit}", rc(*cell)),
+    match words::effect_text(step) {
+        EffectText::Placed { cell, digit } => lines.push(Line::styled(
+            format!("{cell} is {digit}"),
             Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
         )),
-        Effect::Eliminate(removals) => {
-            // The same one digit out of every cell reads as a list of
-            // cells, whatever digits the pattern itself is built on.
-            let first = removals.first().map_or(0, |&(_, mask)| mask);
-            if first.is_power_of_two() && removals.iter().all(|&(_, mask)| mask == first) {
-                lines.push(Line::styled(
-                    format!("Not {}:", first.trailing_zeros()),
-                    Style::default().fg(RED).add_modifier(Modifier::BOLD),
-                ));
-                let cells: Vec<String> = removals.iter().map(|&(cell, _)| rc(cell)).collect();
-                para(lines, &cells.join(", "), ink);
-            } else {
-                for &(cell, mask) in removals {
-                    let text = format!("{}: not {}", rc(cell), digit_list(mask));
-                    para(lines, &text, ink);
-                }
+        EffectText::NotDigit { digit, cells } => {
+            lines.push(Line::styled(
+                format!("Not {digit}:"),
+                Style::default().fg(RED).add_modifier(Modifier::BOLD),
+            ));
+            para(lines, &cells.join(", "), ink);
+        }
+        EffectText::PerCell(texts) => {
+            for text in texts {
+                para(lines, &text, ink);
             }
         }
     }
@@ -791,6 +766,7 @@ pub(super) fn draw_focus_board(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::logic::rc;
 
     #[test]
     fn tutor_text_wraps_at_21_columns() {

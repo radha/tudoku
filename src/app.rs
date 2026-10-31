@@ -21,10 +21,10 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use crate::deal::Difficulty;
 use crate::game::Game;
 use crate::library::{self, Library};
-use crate::logic::{Effect, Technique};
+use crate::logic::Technique;
 use crate::store::{Stats, Store};
-use crate::sudoku::{CELLS, col_of, row_of};
-use crate::tutor::{self, Advice, NoteMode, examples};
+use crate::sudoku::{col_of, row_of};
+use crate::tutor::{self, Advice, NoteMode, rules};
 
 /// How often a running game is saved even without edits.
 const AUTOSAVE_EVERY: Duration = Duration::from_secs(5);
@@ -145,15 +145,8 @@ impl Tutor {
     /// eliminated notes once the step is shown, or place one digit when
     /// no strategy applies. Eliminations need full notes to clear.
     pub fn can_apply(&self) -> bool {
-        match (&self.advice, self.stage) {
-            (_, TutorStage::TryFirst) => false,
-            (Advice::Stuck, _) => true,
-            (Advice::Step(step), TutorStage::ShowMe) => match step.effect {
-                Effect::Place { .. } => true,
-                Effect::Eliminate(_) => self.mode == NoteMode::Full,
-            },
-            _ => false,
-        }
+        self.stage != TutorStage::TryFirst
+            && rules::can_apply(self.mode, &self.advice, self.stage == TutorStage::ShowMe)
     }
 }
 
@@ -724,9 +717,7 @@ impl App {
                     g.use_tutor();
                     self.save();
                 }
-                (Advice::Step(step), TutorStage::Nudge)
-                    if examples::example(step.technique).is_some() =>
-                {
+                (Advice::Step(_), TutorStage::Nudge) if rules::has_example(&t.advice) => {
                     t.stage = TutorStage::Explain { stage: 0 };
                 }
                 (Advice::Step(_), _) => t.stage = TutorStage::ShowMe,
@@ -741,8 +732,7 @@ impl App {
         }
         // With notes still to fill in, there's more to try alone first.
         // A wrong digit is always worth hearing about at once.
-        let try_first =
-            mode == NoteMode::PairMarks && matches!(advice, Advice::Step(_) | Advice::Stuck);
+        let try_first = rules::starts_with_try_first(mode, &advice);
         self.tutor = Some(Tutor {
             mode,
             advice,
@@ -827,24 +817,8 @@ impl App {
             });
             return;
         }
-        match &t.advice {
-            Advice::Step(step) => {
-                if !g.apply_step(step, t.mode) {
-                    return;
-                }
-            }
-            Advice::Stuck => {
-                let s = g.selected_idx();
-                let open = if g.values[s] == 0 {
-                    Some(s)
-                } else {
-                    (0..CELLS).find(|&i| g.values[i] == 0)
-                };
-                if let Some(cell) = open {
-                    g.place_answer(cell);
-                }
-            }
-            Advice::WrongDigit(_) | Advice::WrongNotes(_) => {}
+        if !rules::apply(g, t.mode, &t.advice) {
+            return;
         }
         let done = g.completed;
         self.tutor = None;
@@ -861,8 +835,7 @@ impl App {
         let (Some(g), Some(t)) = (&self.game, &self.tutor) else {
             return;
         };
-        let (mode, advice) = tutor::consult(g);
-        if mode != t.mode || advice != t.advice {
+        if rules::is_stale(g, t.mode, &t.advice) {
             self.tutor = None;
         }
     }
@@ -895,9 +868,9 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::logic::{Grid, Step};
+    use crate::logic::{Effect, Grid, Step};
     use crate::store::Store;
-    use crate::sudoku::{Board, idx, parse_board, solve_one, test_board};
+    use crate::sudoku::{Board, CELLS, idx, parse_board, solve_one, test_board};
     use crate::ui::{self, hit_at};
     use ratatui::{Terminal, backend::TestBackend};
 

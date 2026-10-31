@@ -3,6 +3,8 @@
 
 pub mod examples;
 pub mod lessons;
+pub mod rules;
+pub mod words;
 
 use crate::game::Game;
 use crate::logic::{Grid, Step};
