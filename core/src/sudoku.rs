@@ -333,7 +333,7 @@ pub fn is_valid_solution(b: &Board) -> bool {
 }
 
 /// Classic fixed puzzle + solution so tests never pay generation cost.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn test_board() -> (Board, Board) {
     let puzzle =
         "530070000600195000098000060800060003400803001700020006060000280000419005000080079";

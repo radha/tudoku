@@ -416,8 +416,6 @@ mod tests {
     use super::*;
     use crate::logic::Role;
     use crate::tutor::examples::example;
-    use crate::ui::BOARD_H;
-    use crate::ui::tutor::{TEXT_W, wrap};
 
     /// The longest gist: it shares the map's gist line with the name.
     const GIST_MAX: usize = 60;
@@ -458,35 +456,6 @@ mod tests {
     fn every_technique_has_a_worked_example() {
         for &t in Technique::ALL {
             assert!(example(t).is_some(), "{t:?}");
-        }
-    }
-
-    #[test]
-    fn lesson_text_fits_the_pane() {
-        for &t in Technique::ALL {
-            let lesson = lesson(t);
-            let n = lesson.steps.len();
-            assert!((3..=5).contains(&n), "{t:?} has {n} steps");
-            let mut rows = 0;
-            for (k, step) in lesson.steps.iter().enumerate() {
-                let lines = wrap(&format!("{} {step}", k + 1), TEXT_W);
-                assert!(
-                    lines.iter().all(|l| l.chars().count() <= TEXT_W),
-                    "{t:?}: {lines:?}"
-                );
-                rows += lines.len() + 1; // and a blank line after it
-            }
-            for role in [lesson.roles.0, lesson.roles.1] {
-                // A chip, a space and the role's name.
-                assert!(3 + 1 + role.chars().count() <= TEXT_W, "{t:?}: {role}");
-            }
-            let legend = 3;
-            let keys = 3;
-            let spacing = 2;
-            assert!(
-                rows + legend + keys + spacing <= usize::from(BOARD_H - 3),
-                "{t:?} runs {rows} rows"
-            );
         }
     }
 

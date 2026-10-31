@@ -5,14 +5,9 @@
 //! locally; there is no network access at any point.
 
 mod app;
-mod deal;
-mod game;
-mod library;
-mod logic;
-mod store;
-mod sudoku;
-mod tutor;
 mod ui;
+
+use tudoku_core::{deal, game, library, logic, store, sudoku, tutor};
 
 use std::io::{self, IsTerminal, Stdout};
 use std::sync::Arc;

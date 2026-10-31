@@ -1601,12 +1601,21 @@ name = "tudoku"
 version = "0.2.0"
 dependencies = [
  "crossterm",
- "dirs",
  "rand 0.10.3",
  "ratatui",
+ "signal-hook 0.4.5",
+ "tempfile",
+ "tudoku-core",
+]
+
+[[package]]
+name = "tudoku-core"
+version = "0.2.0"
+dependencies = [
+ "dirs",
+ "rand 0.10.3",
  "serde",
  "serde_json",
- "signal-hook 0.4.5",
  "tempfile",
 ]
 

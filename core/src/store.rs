@@ -156,20 +156,20 @@ pub struct Store {
 }
 
 impl Store {
+    #[cfg(feature = "desktop-dirs")]
     pub fn open_default() -> Self {
         Self {
             dir: dirs::data_dir().map(|d| d.join("tudoku")),
         }
     }
 
-    #[cfg(test)]
     pub fn at(dir: &Path) -> Self {
         Self {
             dir: Some(dir.to_path_buf()),
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn none() -> Self {
         Self { dir: None }
     }

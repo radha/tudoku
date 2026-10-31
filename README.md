@@ -170,7 +170,7 @@ Esc.
 ## Self-checks
 
 ```sh
-cargo test                               # solver, grader, generator + UI tests
+cargo test --workspace                               # solver, grader, generator + UI tests
 cargo run --release -- --offline-check   # deals 5 puzzles per level, checks them, reports median deal time
 cargo run --release -- --find-examples   # finds the tutor's worked examples still missing
 ```
