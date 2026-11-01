@@ -17,4 +17,4 @@ tudoku-core = { path = "core", features = ["test-support"] }
 tempfile = "3.27.0"
 
 [target."cfg(unix)".dependencies]
-signal-hook = "0.4.5"
+signal-hook = "0.4.6"
