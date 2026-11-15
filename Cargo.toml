@@ -10,7 +10,7 @@ members = ["core"]
 tudoku-core = { path = "core" }
 ratatui = { version = "0.30", features = ["crossterm"] }
 crossterm = "0.29"
-rand = "0.10.3"
+rand = "0.10.4"
 
 [dev-dependencies]
 tudoku-core = { path = "core", features = ["test-support"] }
