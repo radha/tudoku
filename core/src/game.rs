@@ -16,24 +16,24 @@ use crate::tutor::NoteMode;
 /// redo after an undo.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct UndoEntry {
-    cell: usize,
+    cell: u8,
     prev_value: u8,
     prev_notes: u16,
-    peer_notes: Vec<(usize, u16)>,
+    peer_notes: Vec<(u8, u16)>,
 }
 
 impl UndoEntry {
     /// Could this entry have come from playing `puzzle`?
     fn fits(&self, puzzle: &Board) -> bool {
         let notes_ok = |m: u16| m & !ALL_DIGITS == 0;
-        self.cell < CELLS
-            && puzzle[self.cell] == 0
+        usize::from(self.cell) < CELLS
+            && puzzle[usize::from(self.cell)] == 0
             && self.prev_value <= 9
             && notes_ok(self.prev_notes)
             && self
                 .peer_notes
                 .iter()
-                .all(|&(p, m)| p < CELLS && puzzle[p] == 0 && notes_ok(m))
+                .all(|&(p, m)| usize::from(p) < CELLS && puzzle[usize::from(p)] == 0 && notes_ok(m))
     }
 }
 
@@ -62,6 +62,42 @@ pub struct SavedGame {
 }
 
 const SAVE_VERSION: u32 = 2;
+
+/// A board as its 81-digit string, written from a stack buffer.
+struct BoardText([u8; CELLS]);
+
+impl BoardText {
+    fn new(board: &Board) -> Self {
+        Self(board.map(|v| b'0' + v))
+    }
+}
+
+impl Serialize for BoardText {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // Only ASCII digits go in, so this never fails.
+        serializer.serialize_str(std::str::from_utf8(&self.0).map_err(serde::ser::Error::custom)?)
+    }
+}
+
+/// [`SavedGame`] by reference, for writing a save without copying the
+/// undo history: the same fields in the same order, so it serializes to
+/// exactly what `snapshot()` does. Only written, never read back.
+#[derive(Serialize)]
+pub(crate) struct SavedGameRef<'a> {
+    version: u32,
+    difficulty: &'a str,
+    puzzle: BoardText,
+    solution: BoardText,
+    values: BoardText,
+    notes: &'a [u16],
+    selected: (usize, usize),
+    notes_mode: bool,
+    mistakes: u32,
+    tutor_used: u32,
+    elapsed_ms: u64,
+    undo: &'a [UndoEntry],
+    redo: &'a [UndoEntry],
+}
 
 pub struct Game {
     pub difficulty: Difficulty,
@@ -190,12 +226,12 @@ impl Game {
 
     /// Clear `digit` from the pencil marks of every peer of `i` (same row,
     /// column, or box), returning the cleared cells' prior notes for undo.
-    fn clear_peer_notes(&mut self, i: usize, digit: u8) -> Vec<(usize, u16)> {
+    fn clear_peer_notes(&mut self, i: usize, digit: u8) -> Vec<(u8, u16)> {
         let bit = 1 << digit;
         let mut cleared = Vec::new();
         for p in peers(i) {
             if self.notes[p] & bit != 0 {
-                cleared.push((p, self.notes[p]));
+                cleared.push((p as u8, self.notes[p]));
                 self.notes[p] &= !bit;
             }
         }
@@ -205,10 +241,10 @@ impl Game {
     /// Remember cell `i` (and the peer notes about to change) before an
     /// edit. A new edit takes the board somewhere else: what was undone
     /// can't be redone any more.
-    fn push_undo(&mut self, i: usize, peer_notes: Vec<(usize, u16)>) {
+    fn push_undo(&mut self, i: usize, peer_notes: Vec<(u8, u16)>) {
         self.redo.clear();
         self.undo.push(UndoEntry {
-            cell: i,
+            cell: i as u8,
             prev_value: self.values[i],
             prev_notes: self.notes[i],
             peer_notes,
@@ -283,22 +319,23 @@ impl Game {
     /// Put back the cells `e` remembers, and return an entry remembering
     /// them as they were just now, to step the other way.
     fn revert(&mut self, e: UndoEntry) -> UndoEntry {
+        let cell = usize::from(e.cell);
         let back = UndoEntry {
             cell: e.cell,
-            prev_value: self.values[e.cell],
-            prev_notes: self.notes[e.cell],
+            prev_value: self.values[cell],
+            prev_notes: self.notes[cell],
             peer_notes: e
                 .peer_notes
                 .iter()
-                .map(|&(p, _)| (p, self.notes[p]))
+                .map(|&(p, _)| (p, self.notes[usize::from(p)]))
                 .collect(),
         };
         for (p, prev) in e.peer_notes {
-            self.notes[p] = prev;
+            self.notes[usize::from(p)] = prev;
         }
-        self.values[e.cell] = e.prev_value;
-        self.notes[e.cell] = e.prev_notes;
-        self.select_cell(e.cell);
+        self.values[cell] = e.prev_value;
+        self.notes[cell] = e.prev_notes;
+        self.select_cell(cell);
         back
     }
 
@@ -386,7 +423,7 @@ impl Game {
                 }
                 let others = removals[1..]
                     .iter()
-                    .map(|&(cell, _)| (cell, self.notes[cell]))
+                    .map(|&(cell, _)| (cell as u8, self.notes[cell]))
                     .collect();
                 self.push_undo(first, others);
                 for &(cell, mask) in removals {
@@ -479,6 +516,26 @@ impl Game {
         }
     }
 
+    /// What `snapshot()` holds, borrowed from the game, to write out.
+    pub(crate) fn saved_ref(&self) -> SavedGameRef<'_> {
+        let puzzle: Board = std::array::from_fn(|i| if self.given[i] { self.values[i] } else { 0 });
+        SavedGameRef {
+            version: SAVE_VERSION,
+            difficulty: self.difficulty.name(),
+            puzzle: BoardText::new(&puzzle),
+            solution: BoardText::new(&self.solution),
+            values: BoardText::new(&self.values),
+            notes: &self.notes,
+            selected: self.selected,
+            notes_mode: self.notes_mode,
+            mistakes: self.mistakes,
+            tutor_used: self.tutor_used,
+            elapsed_ms: u64::try_from(self.elapsed().as_millis()).unwrap_or(u64::MAX),
+            undo: &self.undo,
+            redo: &self.redo,
+        }
+    }
+
     /// Rebuild a game from a save, refusing anything that isn't a
     /// consistent, unfinished, uniquely solvable puzzle.
     pub fn restore(s: SavedGame) -> Result<Game, String> {
@@ -526,7 +583,7 @@ impl Game {
 mod tests {
     use super::*;
     use crate::logic::Technique;
-    use crate::sudoku::test_board;
+    use crate::sudoku::{candidates_mask, test_board};
 
     fn test_game() -> Game {
         let (p, s) = test_board();
@@ -824,7 +881,7 @@ mod tests {
     fn restore_rejects_tampered_or_finished_saves() {
         let good = test_game().snapshot();
         assert!(Game::restore(good.clone()).is_ok());
-        let tampered: [fn(&mut SavedGame); 8] = [
+        let tampered: [fn(&mut SavedGame); 9] = [
             |s| s.version = 99,
             |s| s.values.replace_range(0..1, "9"), // overwrites a given
             |s| s.solution.replace_range(0..2, "35"),
@@ -832,6 +889,15 @@ mod tests {
             |s| s.values = s.solution.clone(), // already solved
             |s| s.notes[2] = 1,                // bit 0 isn't a digit
             |s| s.selected = (9, 0),
+            // A cell off the board.
+            |s| {
+                s.undo.push(UndoEntry {
+                    cell: 81,
+                    prev_value: 0,
+                    prev_notes: 0,
+                    peer_notes: Vec::new(),
+                })
+            },
             // Undo history that could never come from play: editing a given.
             |s| {
                 s.undo.push(UndoEntry {
@@ -847,6 +913,58 @@ mod tests {
             tamper(&mut s);
             assert!(Game::restore(s).is_err(), "tampering #{n} slipped through");
         }
+    }
+
+    #[test]
+    fn a_cell_beyond_the_board_in_a_save_is_refused() {
+        let mut g = test_game();
+        g.set_selected(0, 2);
+        g.enter_digit(4);
+        let json = serde_json::to_value(g.snapshot()).unwrap();
+        assert!(serde_json::from_value::<SavedGame>(json.clone()).is_ok());
+        for (field, bad) in [("cell", 81), ("cell", 300), ("peer", 81), ("peer", 300)] {
+            let mut v = json.clone();
+            let entry = &mut v["undo"][0];
+            if field == "cell" {
+                entry["cell"] = bad.into();
+            } else {
+                entry["peer_notes"] = serde_json::json!([[bad, 2]]);
+            }
+            let refused =
+                serde_json::from_value::<SavedGame>(v).map_or(true, |s| Game::restore(s).is_err());
+            assert!(refused, "{field} {bad}");
+        }
+    }
+
+    #[test]
+    fn the_borrowed_save_is_the_snapshot_byte_for_byte() {
+        let mut g = test_game();
+        let empty: Vec<usize> = (0..CELLS).filter(|&i| g.values[i] == 0).collect();
+        // Notes everywhere, then right digits that clear peers' notes, a
+        // mistake, and two undos so that both stacks have entries.
+        for &i in &empty {
+            g.notes[i] = candidates_mask(&g.values, i);
+        }
+        for &i in empty.iter().take(6) {
+            g.set_selected(row_of(i), col_of(i));
+            g.enter_digit(g.solution[i]);
+        }
+        let wrong = empty[6];
+        g.set_selected(row_of(wrong), col_of(wrong));
+        g.enter_digit(g.solution[wrong] % 9 + 1);
+        g.undo();
+        g.undo();
+        assert!(g.mistakes > 0 && !g.undo.is_empty() && !g.redo.is_empty());
+        assert!(
+            g.undo
+                .iter()
+                .chain(&g.redo)
+                .any(|e| !e.peer_notes.is_empty())
+        );
+        assert_eq!(
+            serde_json::to_string(&g.saved_ref()).unwrap(),
+            serde_json::to_string(&g.snapshot()).unwrap()
+        );
     }
 
     #[test]

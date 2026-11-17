@@ -232,7 +232,7 @@ impl Store {
     /// Saved after every move, so this one skips the flush to disk: an OS
     /// crash can lose the last few moves, never the best times.
     pub fn save_game(&self, game: &Game) -> io::Result<()> {
-        self.write(GAME_FILE, &game.snapshot(), false)
+        self.write(GAME_FILE, &game.saved_ref(), false)
     }
 
     pub fn clear_game(&self) -> io::Result<()> {
@@ -273,13 +273,20 @@ impl Store {
 /// even a power cut leaves one or the other whole.
 fn write_atomic(path: &Path, bytes: &[u8], durable: bool) -> io::Result<()> {
     static WRITES: AtomicU64 = AtomicU64::new(0);
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)?;
-    }
     let n = WRITES.fetch_add(1, Ordering::Relaxed);
     let tmp = path.with_extension(format!("json.{}-{n}.tmp", std::process::id()));
     let write = || -> io::Result<()> {
-        let mut file = fs::File::create(&tmp)?;
+        // The directory is there after the first save: only make it when
+        // the file can't be created for want of it.
+        let mut file = match fs::File::create(&tmp) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                if let Some(dir) = path.parent() {
+                    fs::create_dir_all(dir)?;
+                }
+                fs::File::create(&tmp)?
+            }
+            created => created?,
+        };
         file.write_all(bytes)?;
         if durable {
             file.sync_all()?;
@@ -301,6 +308,18 @@ mod tests {
     fn game() -> Game {
         let (p, s) = test_board();
         Game::new(Difficulty::Hard, p, s)
+    }
+
+    #[test]
+    fn saving_makes_a_missing_directory_and_leaves_no_temp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("a").join("b");
+        let store = Store::at(&nested);
+        store.save_game(&game()).unwrap();
+        assert!(store.load_game().is_some());
+        store.save_game(&game()).unwrap();
+        let files: Vec<_> = fs::read_dir(&nested).unwrap().collect();
+        assert_eq!(files.len(), 1, "{files:?}");
     }
 
     #[test]

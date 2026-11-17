@@ -58,7 +58,8 @@ pub fn apply(game: &mut Game, mode: NoteMode, advice: &Advice) -> bool {
 
 /// Whether the board no longer reads the way it did when the advice was given.
 pub fn is_stale(game: &Game, mode: NoteMode, advice: &Advice) -> bool {
-    consult(game) != (mode, advice.clone())
+    let (now_mode, now_advice) = consult(game);
+    now_mode != mode || now_advice != *advice
 }
 
 #[cfg(test)]

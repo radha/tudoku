@@ -15,12 +15,13 @@ pub enum Library {
 }
 
 /// `level`'s techniques, easiest first: one column of the map.
-pub fn column(level: Difficulty) -> Vec<Technique> {
-    Technique::ALL
-        .iter()
-        .copied()
-        .filter(|&t| level_of(t) == level)
-        .collect()
+///
+/// `Technique::ALL` runs level by level, so a column is one stretch of it.
+pub fn column(level: Difficulty) -> &'static [Technique] {
+    let all = Technique::ALL;
+    let start = all.partition_point(|&t| level_of(t).index() < level.index());
+    let end = all.partition_point(|&t| level_of(t).index() <= level.index());
+    &all[start..end]
 }
 
 /// Where the map's arrows go from `at`: `dr` rows within its column, or
@@ -65,7 +66,10 @@ mod tests {
     fn columns_hold_every_technique_once_by_level() {
         let counts: Vec<usize> = Difficulty::ALL.iter().map(|&d| column(d).len()).collect();
         assert_eq!(counts, [3, 6, 12, 11, 7]);
-        let all: Vec<Technique> = Difficulty::ALL.iter().flat_map(|&d| column(d)).collect();
+        let all: Vec<Technique> = Difficulty::ALL
+            .iter()
+            .flat_map(|&d| column(d).iter().copied())
+            .collect();
         assert_eq!(all, Technique::ALL);
         assert_eq!(column(Difficulty::Hard)[3], Skyscraper);
     }

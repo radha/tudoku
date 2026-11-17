@@ -19,7 +19,7 @@ use crate::app::Action;
 use crate::deal::{Difficulty, level_of};
 use crate::library::{Library, column, place};
 use crate::logic::Technique;
-use crate::tutor::examples::example;
+use crate::tutor::examples::Example;
 use crate::tutor::lessons::gist;
 
 /// The map's popup: the indent, five columns but the last one's trailing
@@ -41,11 +41,12 @@ pub(super) fn draw_library(
     frame: &mut Frame,
     area: Rect,
     library: Library,
+    example: Option<&Example>,
     covered: bool,
     hits: &mut Vec<Hit>,
 ) {
     match library {
-        Library::Lesson { at, stage } => match example(at) {
+        Library::Lesson { at, stage } => match example.filter(|e| e.step.technique == at) {
             Some(ex) => {
                 let rest = format!(
                     "  {} · {} of {}",
@@ -55,7 +56,7 @@ pub(super) fn draw_library(
                 );
                 let top = badges(Span::styled(rest, Style::default().fg(MUTED)));
                 let header = (top, explain_header(at, stage).1);
-                draw_explain(frame, area, header, &ex, stage, &LIBRARY_KEYS, hits);
+                draw_explain(frame, area, header, ex, stage, &LIBRARY_KEYS, hits);
             }
             None => draw_map(frame, area, at, covered, hits),
         },
@@ -100,7 +101,7 @@ fn draw_map(frame: &mut Frame, area: Rect, at: Technique, covered: bool, hits: &
     let muted = Style::default().fg(MUTED);
     let col_w = usize::from(COL_W);
     let columns = Difficulty::ALL.map(column);
-    let longest = columns.iter().map(Vec::len).max().unwrap_or(0);
+    let longest = columns.iter().map(|c| c.len()).max().unwrap_or(0);
 
     let mut lines = vec![
         Line::styled(" arrows/hjkl to move, Enter to open, or click", muted),
@@ -188,6 +189,7 @@ mod tests {
     fn reading(library: Library) -> App {
         let mut app = App::new(Store::none());
         app.library = Some(library);
+        app.sync_example();
         app
     }
 

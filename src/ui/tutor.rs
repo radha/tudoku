@@ -13,12 +13,12 @@ use ratatui::{
 
 use super::{
     ACCENT, BAND_BG, BG, BOARD_H, BOARD_W, BRIGHT, CELL_H, CELL_W, DIM, ERR_BG, GREEN, GRID_THIN,
-    Hit, INK, MUTED, NOTE, NOTE_SEL, PANEL_W, PAT_BG, RED, SEL_BG, SURFACE, VIOLET, cell_screen,
-    grid_glyph, popup_block, push_hit,
+    Hit, INK, MUTED, NOTE, NOTE_SEL, PANEL_W, PAT_BG, RED, SEL_BG, SURFACE, VIOLET, WIDE_DIGITS,
+    cell_screen, grid_glyph, popup_block, push_hit,
 };
 use crate::app::{Action, EXAMPLE_STAGES, Tutor, TutorStage};
 use crate::logic::{Effect, LinkKind, Role, Step, Technique};
-use crate::sudoku::{Board, CELLS, HOUSES};
+use crate::sudoku::{Board, CELLS, HOUSES, candidates_mask};
 use crate::tutor::examples::Example;
 use crate::tutor::lessons::{Lesson, lesson};
 use crate::tutor::words::{self, EffectText, LegendKind};
@@ -509,6 +509,20 @@ pub(super) struct FocusView<'a> {
     pub frame: Color,
 }
 
+/// The candidates the tutor reasons from on this board, as
+/// `tutor::read(values, notes).1.cands()` gives them, with one scan of each
+/// empty cell's peers instead of two for every cell.
+pub(super) fn focus_cands(values: &Board, notes: &[u16; CELLS]) -> [u16; CELLS] {
+    let full = (0..CELLS).all(|i| values[i] != 0 || notes[i] != 0);
+    std::array::from_fn(|i| {
+        if values[i] != 0 {
+            return 0;
+        }
+        let open = candidates_mask(values, i);
+        if full { notes[i] & open } else { open }
+    })
+}
+
 /// Where candidate `digit` sits in the cell whose interior starts at `(x, y)`.
 fn slot(x: u16, y: u16, digit: u8) -> (u16, u16) {
     let k = u16::from(digit - 1);
@@ -581,7 +595,7 @@ pub(super) fn draw_focus_board(
     let label = Style::default().fg(MUTED);
     let mut chips: Vec<Chip> = Vec::new();
     // Placed digits, fullwidth: two columns each.
-    let mut digits: Vec<Chip> = Vec::new();
+    let mut digits: Vec<(u16, u16, &'static str, Style)> = Vec::with_capacity(CELLS);
     for r in 0..9 {
         let (_, y) = cell_screen(ox, oy, r, 0);
         buf[(ox - 1, y + CELL_H / 2)]
@@ -615,11 +629,11 @@ pub(super) fn draw_focus_board(
                 } else {
                     DIM
                 };
-                digits.push(Chip {
-                    x: x + CELL_W / 2,
-                    y: y + CELL_H / 2,
-                    ch: char::from_u32(0xFF10 + u32::from(v)).unwrap(),
-                    style: Style::default()
+                digits.push((
+                    x + CELL_W / 2,
+                    y + CELL_H / 2,
+                    WIDE_DIGITS[usize::from(v)],
+                    Style::default()
                         .fg(fg)
                         .bg(bg)
                         .add_modifier(if on || is_sel {
@@ -627,7 +641,7 @@ pub(super) fn draw_focus_board(
                         } else {
                             Modifier::empty()
                         }),
-                });
+                ));
                 continue;
             }
             // Notes show all along the pattern's houses too, so you can
@@ -751,8 +765,8 @@ pub(super) fn draw_focus_board(
     put(buf, &chips);
     // Placed digits go on last and whole, so a line through one looks
     // interrupted by it rather than splitting its two columns.
-    for d in &digits {
-        buf.set_string(d.x, d.y, d.ch.to_string(), d.style);
+    for &(x, y, digit, style) in &digits {
+        buf.set_string(x, y, digit, style);
     }
 
     for c in 0..9 {
@@ -952,6 +966,28 @@ pub(crate) mod tests {
         hits.iter()
             .filter(|h| matches!(h.action, Some(Action::Board(BoardAction::Select(..)))))
             .count()
+    }
+
+    #[test]
+    fn focus_cands_are_what_the_tutor_reads() {
+        let (p, s) = test_board();
+        let mut game = Game::new(Difficulty::Easy, p, s);
+        let same = |game: &Game| {
+            assert_eq!(
+                focus_cands(&game.values, &game.notes),
+                *crate::tutor::read(&game.values, &game.notes).1.cands()
+            );
+        };
+        same(&game);
+        for i in 0..CELLS {
+            if game.values[i] == 0 {
+                game.notes[i] = crate::sudoku::candidates_mask(&game.values, i);
+            }
+        }
+        same(&game);
+        let i = (0..CELLS).find(|&i| game.values[i] == 0).unwrap();
+        game.notes[i] &= game.notes[i] - 1;
+        same(&game);
     }
 
     #[test]
@@ -1222,6 +1258,7 @@ pub(crate) mod tests {
             advice: Advice::Step(step),
             stage: TutorStage::Explain { stage },
         });
+        app.sync_example();
         app
     }
 
@@ -1269,10 +1306,9 @@ pub(crate) mod tests {
 
         assert_eq!(buf[(ox, oy)].symbol(), "┏");
         assert_eq!(buf[(ox, oy)].fg, VIOLET, "a violet frame");
-        for i in 0..CELLS {
+        for (i, &v) in ex.values.iter().enumerate() {
             let (x, y) = cell_screen(ox, oy, i / 9, i % 9);
             let centre = buf[(x + CELL_W / 2, y + CELL_H / 2)].symbol();
-            let v = ex.values[i];
             if v != 0 {
                 let digit = char::from_u32(0xFF10 + u32::from(v)).unwrap();
                 assert_eq!(centre, digit.to_string(), "{}", rc(i));

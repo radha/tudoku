@@ -4,7 +4,7 @@
 
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Margin, Position, Rect},
+    layout::{Alignment, Margin, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, Paragraph},
@@ -134,8 +134,16 @@ pub fn format_time(d: std::time::Duration) -> String {
     }
 }
 
+/// A `w` by `h` rectangle centred in `area` (the odd column or row goes
+/// before it), or all of `area` along an axis it is too big for.
 fn centered_rect(area: Rect, w: u16, h: u16) -> Rect {
-    area.centered(Constraint::Length(w), Constraint::Length(h))
+    let (w, h) = (w.min(area.width), h.min(area.height));
+    Rect::new(
+        area.x + (area.width - w).div_ceil(2),
+        area.y + (area.height - h).div_ceil(2),
+        w,
+        h,
+    )
 }
 
 /// Top-left of the board for a screen `area`: the board and side panel
@@ -218,6 +226,18 @@ fn grid_glyph(gx: u16, gy: u16) -> Option<(char, bool)> {
 
 // ------------------------------------------------------------ board
 
+/// The digits 0 to 9, fullwidth: two columns each.
+pub(super) const WIDE_DIGITS: [&str; 10] =
+    ["０", "１", "２", "３", "４", "５", "６", "７", "８", "９"];
+
+/// A rule the width of the board and panel, and the progress bar's two
+/// halves: sliced, so drawing them allocates nothing. Each glyph is three
+/// bytes.
+const RULE: &str = "─────────────────────────────────────────────────────────────────────────────────────────────────────";
+const BAR: &str = "██████████████";
+const BAR_W: usize = 14;
+const _: () = assert!(RULE.len() == 3 * BLOCK_W as usize && BAR.len() == 3 * BAR_W);
+
 /// `labels_y` is the row for the column numbers: the one above the board,
 /// or on a short terminal the board's own top edge.
 fn draw_board(
@@ -291,11 +311,10 @@ fn draw_board(
                 };
                 // Fullwidth digits fill two columns, so they draw a size up
                 // from the one-column pencil marks.
-                let digit = char::from_u32(0xFF10 + u32::from(v)).unwrap();
                 buf.set_string(
                     x + CELL_W / 2,
                     ym,
-                    digit.to_string(),
+                    WIDE_DIGITS[usize::from(v)],
                     Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
                 );
                 // Conflict marker: duplicates show even without color.
@@ -416,7 +435,7 @@ fn fit(text: &str, width: usize) -> String {
 fn header_lines(game: &Game, best: Option<Duration>, width: u16) -> (Line<'static>, Line<'static>) {
     let diff = game.difficulty;
     let (done, total) = game.progress();
-    let bar_w = 14;
+    let bar_w = BAR_W;
     let filled = done * bar_w / total.max(1);
     let top = Line::from(vec![
         Span::styled(
@@ -494,8 +513,8 @@ fn stats_line(
             format!("🎓 {}   ", game.tutor_used),
             Style::default().fg(MUTED),
         ),
-        Span::styled("█".repeat(filled), Style::default().fg(ACCENT)),
-        Span::styled("█".repeat(empty), Style::default().fg(GRID_THIN)),
+        Span::styled(&BAR[..3 * filled], Style::default().fg(ACCENT)),
+        Span::styled(&BAR[..3 * empty], Style::default().fg(GRID_THIN)),
         Span::styled(format!(" {done}/{total}   "), Style::default().fg(MUTED)),
         notes,
     ])
@@ -868,12 +887,18 @@ fn draw_overlay(frame: &mut Frame, area: Rect, app: &App, overlay: Overlay, hits
         Overlay::Help => draw_help(frame, area),
         Overlay::Paused => draw_paused(frame, area),
         Overlay::Levels { cursor } => {
-            let mut rows = Vec::new();
             let levels = Difficulty::ALL.map(MenuRow::Level);
             let footer = " Enter start   Esc cancel";
-            let r = draw_levels_menu(frame, area, app, &levels, cursor, footer, &mut rows);
-            push_hit(hits, r, None);
-            hits.extend(rows);
+            // The popup's frame swallows clicks, under its rows.
+            let first_row = hits.len();
+            let r = draw_levels_menu(frame, area, app, &levels, cursor, footer, hits);
+            hits.insert(
+                first_row,
+                Hit {
+                    rect: r,
+                    action: None,
+                },
+            );
         }
         Overlay::Won => {
             let Some(game) = &app.game else { return };
@@ -1059,12 +1084,15 @@ fn draw_game(frame: &mut Frame, area: Rect, app: &App, game: &Game, hits: &mut V
         _ => None,
     });
     let example = step.and_then(|(step, stage)| match stage {
-        TutorStage::Explain { stage } => Some((examples::example(step.technique)?, stage)),
+        TutorStage::Explain { stage } => {
+            let ex = app.example.as_ref()?;
+            (ex.step.technique == step.technique).then_some((ex, stage))
+        }
         _ => None,
     });
-    if let Some((ex, stage)) = &example {
-        let header = tutor::explain_header(ex.step.technique, *stage);
-        draw_explain(frame, area, header, ex, *stage, &tutor::EXPLAIN_KEYS, hits);
+    if let Some((ex, stage)) = example {
+        let header = tutor::explain_header(ex.step.technique, stage);
+        draw_explain(frame, area, header, ex, stage, &tutor::EXPLAIN_KEYS, hits);
         return;
     }
     let focus = step
@@ -1077,10 +1105,10 @@ fn draw_game(frame: &mut Frame, area: Rect, app: &App, game: &Game, hits: &mut V
 
     let labels_y = if header_h(area) > 2 { oy - 1 } else { oy };
     if let Some(step) = focus {
-        let (_, grid) = crate::tutor::read(&game.values, &game.notes);
+        let cands = tutor::focus_cands(&game.values, &game.notes);
         let view = tutor::FocusView {
             values: &game.values,
-            cands: grid.cands(),
+            cands: &cands,
             selected: Some(game.selected),
             step,
             stage: 2,
@@ -1157,7 +1185,7 @@ fn draw_header(frame: &mut Frame, area: Rect, (top, bottom): (Line<'static>, Lin
     frame.render_widget(Paragraph::new(vec![top, bottom]), header);
     if header_h(area) > 2 {
         frame.render_widget(
-            Paragraph::new("─".repeat(usize::from(BLOCK_W))).style(Style::default().fg(GRID_THIN)),
+            Paragraph::new(&RULE[..3 * usize::from(BLOCK_W)]).style(Style::default().fg(GRID_THIN)),
             Rect::new(ox, top_y + 2, BLOCK_W, 1),
         );
     }
@@ -1223,7 +1251,8 @@ fn draw_explain(
 
 /// Draw the whole screen; return click targets for the event loop.
 pub fn render(frame: &mut Frame, app: &App) -> Vec<Hit> {
-    let mut hits = Vec::new();
+    // A game frame registers about a hundred click areas.
+    let mut hits = Vec::with_capacity(100);
     let area = frame.area();
     frame.render_widget(
         Block::default().style(Style::default().bg(BG).fg(INK)),
@@ -1239,7 +1268,7 @@ pub fn render(frame: &mut Frame, app: &App) -> Vec<Hit> {
         (Some(game), _) => draw_game(frame, area, app, game, &mut hits),
         (None, Some(shown)) => {
             let covered = !app.overlays.is_empty();
-            library::draw_library(frame, area, shown, covered, &mut hits);
+            library::draw_library(frame, area, shown, app.example.as_ref(), covered, &mut hits);
         }
         (None, None) => draw_title(frame, area, app, &mut hits),
     }
@@ -1313,6 +1342,27 @@ mod tests {
         let (ox, oy) = board_origin(Rect::new(0, 0, W, 50));
         let line = &lines[usize::from(oy + gy)];
         line.chars().nth(usize::from(ox + gx)).unwrap()
+    }
+
+    #[test]
+    fn centered_rect_matches_ratatuis_centered() {
+        use ratatui::layout::Constraint;
+        for (x, y) in [(0, 0), (3, 2), (60000, 65000)] {
+            for aw in [0, 1, 2, 5, 6, 40, 41, 103, 120] {
+                for ah in [0, 1, 2, 5, 6, 33, 34, 45] {
+                    let area = Rect::new(x, y, aw, ah);
+                    for w in [0, 1, 2, 7, 8, 39, 48, 100, 121, 400] {
+                        for h in [0, 1, 2, 7, 8, 13, 30, 46, 90] {
+                            assert_eq!(
+                                centered_rect(area, w, h),
+                                area.centered(Constraint::Length(w), Constraint::Length(h)),
+                                "{area:?} {w}x{h}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]

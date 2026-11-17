@@ -23,11 +23,17 @@ pub struct Example {
     pub step: Step,
 }
 
-/// The worked example for `t`, if one has been found.
+/// The worked example for `t`, if one has been found. Callers that draw
+/// it every frame should keep the result rather than ask again.
 pub fn example(t: Technique) -> Option<Example> {
+    let name = t.name();
     EXAMPLES
         .lines()
-        .filter(|line| line.split('|').next().and_then(Technique::from_name) == Some(t))
+        .filter(|line| {
+            line.split('|')
+                .next()
+                .is_some_and(|field| field.eq_ignore_ascii_case(name))
+        })
         .find_map(parse)
 }
 
@@ -37,23 +43,26 @@ fn parse(line: &str) -> Option<Example> {
     let mut fields = line.split('|');
     let t = Technique::from_name(fields.next()?)?;
     let (values, masks) = (fields.next()?, fields.next()?);
-    if fields.next().is_some() || !masks.is_ascii() || masks.len() != 3 * CELLS {
+    if fields.next().is_some()
+        || !values.is_ascii()
+        || values.len() != CELLS
+        || !masks.is_ascii()
+        || masks.len() != 3 * CELLS
+    {
         return None;
     }
-    let values: Vec<u8> = values
-        .chars()
-        .map(|c| c.to_digit(10).map(|d| d as u8))
-        .collect::<Option<_>>()?;
-    let values: Board = values.try_into().ok()?;
-    let cands: Vec<u16> = masks
-        .as_bytes()
-        .chunks(3)
-        .map(|hex| u16::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok())
-        .collect::<Option<_>>()?;
-    let grid = Grid::with_candidates(&values, &cands.try_into().ok()?);
+    let mut board: Board = [0; CELLS];
+    for (v, c) in board.iter_mut().zip(values.bytes()) {
+        *v = char::from(c).to_digit(10)? as u8;
+    }
+    let mut cands = [0u16; CELLS];
+    for (m, hex) in cands.iter_mut().zip(masks.as_bytes().chunks(3)) {
+        *m = u16::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok()?;
+    }
+    let grid = Grid::with_candidates(&board, &cands);
     let step = grid.find(t)?;
     Some(Example {
-        values,
+        values: board,
         cands: *grid.cands(),
         step,
     })

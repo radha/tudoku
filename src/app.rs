@@ -24,6 +24,7 @@ use crate::library::{self, Library};
 use crate::logic::Technique;
 use crate::store::{Stats, Store};
 use crate::sudoku::{col_of, row_of};
+use crate::tutor::examples::{self, Example};
 use crate::tutor::{self, Advice, NoteMode, rules};
 
 /// How often a running game is saved even without edits.
@@ -159,6 +160,25 @@ pub enum MenuRow {
     Stats,
 }
 
+/// The most rows the title menu has: Continue, the levels, the library
+/// and the stats.
+const MENU_ROWS: usize = Difficulty::ALL.len() + 3;
+
+/// The title menu's rows, on the stack. Reads as a slice.
+#[derive(Debug, Clone, Copy)]
+pub struct MenuRows {
+    rows: [MenuRow; MENU_ROWS],
+    len: usize,
+}
+
+impl std::ops::Deref for MenuRows {
+    type Target = [MenuRow];
+
+    fn deref(&self) -> &[MenuRow] {
+        &self.rows[..self.len]
+    }
+}
+
 pub struct App {
     pub game: Option<Game>,
     pub overlays: Vec<Overlay>,
@@ -178,6 +198,10 @@ pub struct App {
     /// The techniques library, while it is on screen instead of the title
     /// menu. Only reachable from the title menu.
     pub library: Option<Library>,
+    /// The worked example on screen, if any: the tutor's while it
+    /// explains, or the library lesson's. One slot, kept in step by
+    /// [`App::sync_example`], so drawing never parses it again.
+    pub example: Option<Example>,
     store: Store,
     last_saved: Instant,
     /// Whether the terminal window has focus, as far as we know.
@@ -233,6 +257,7 @@ impl App {
             new_best: false,
             tutor: None,
             library: None,
+            example: None,
             store,
             last_saved: Instant::now(),
             focused: true,
@@ -247,14 +272,24 @@ impl App {
 
     /// The title menu: "Continue" first when there's a saved game, the
     /// library and stats last.
-    pub fn menu_rows(&self) -> Vec<MenuRow> {
-        let levels = Difficulty::ALL.map(MenuRow::Level);
-        self.resume
-            .iter()
-            .map(|_| MenuRow::Continue)
-            .chain(levels)
-            .chain([MenuRow::Library, MenuRow::Stats])
-            .collect()
+    pub fn menu_rows(&self) -> MenuRows {
+        let mut rows = MenuRows {
+            rows: [MenuRow::Stats; MENU_ROWS],
+            len: 0,
+        };
+        let mut push = |row| {
+            rows.rows[rows.len] = row;
+            rows.len += 1;
+        };
+        if self.resume.is_some() {
+            push(MenuRow::Continue);
+        }
+        for level in Difficulty::ALL {
+            push(MenuRow::Level(level));
+        }
+        push(MenuRow::Library);
+        push(MenuRow::Stats);
+        rows
     }
 
     fn menu_row_of(&self, level: Difficulty) -> usize {
@@ -425,7 +460,35 @@ impl App {
             | Action::LibraryTurn(_)
             | Action::LibraryBack => self.browse(action),
         }
+        self.sync_example();
         false
+    }
+
+    /// The technique whose worked example is on screen, if one is.
+    fn example_wanted(&self) -> Option<Technique> {
+        match (&self.tutor, self.library) {
+            (
+                Some(Tutor {
+                    advice: Advice::Step(step),
+                    stage: TutorStage::Explain { .. },
+                    ..
+                }),
+                _,
+            ) => Some(step.technique),
+            (None, Some(Library::Lesson { at, .. })) => Some(at),
+            _ => None,
+        }
+    }
+
+    /// Fill the example slot for what is on screen, replace it when the
+    /// technique changes, and empty it when no example is showing. Called
+    /// after every change to the tutor or the library; code that sets
+    /// those fields directly must call it too.
+    pub fn sync_example(&mut self) {
+        let wanted = self.example_wanted();
+        if self.example.as_ref().map(|e| e.step.technique) != wanted {
+            self.example = wanted.and_then(examples::example);
+        }
     }
 
     fn confirm(&mut self) {
@@ -855,6 +918,7 @@ impl App {
         self.dealing = None;
         self.new_best = false;
         self.overlays.clear();
+        self.sync_example();
         self.save();
         // Started while the player is in another window, or with the
         // window too small to show it: wait for them.
@@ -1382,6 +1446,33 @@ mod tests {
     fn board_state(app: &App) -> ((usize, usize), Board, [u16; CELLS], bool, u32) {
         let g = app.game.as_ref().unwrap();
         (g.selected, g.values, g.notes, g.notes_mode, g.mistakes)
+    }
+
+    #[test]
+    fn the_example_slot_follows_the_tutor_and_the_library() {
+        let mut app = app_with_game(Difficulty::Easy);
+        assert!(app.example.is_none());
+        open_tutor(&mut app);
+        assert!(app.example.is_none(), "a nudge shows no example");
+        key(&mut app, KeyCode::Char('t'));
+        let Some(Advice::Step(step)) = app.tutor.as_ref().map(|t| t.advice.clone()) else {
+            panic!("a step")
+        };
+        let held = app.example.as_ref().expect("explaining");
+        assert_eq!(held.step.technique, step.technique);
+        key(&mut app, KeyCode::Char('t'));
+        assert!(app.example.is_none(), "show me is on the board");
+
+        let mut app = title();
+        app.apply(Action::OpenLibrary);
+        assert!(app.example.is_none(), "the map has none");
+        app.apply(Action::LibraryOpen(Technique::Skyscraper));
+        let kept = |app: &App| app.example.as_ref().map(|e| e.step.technique);
+        assert_eq!(kept(&app), Some(Technique::Skyscraper));
+        app.apply(Action::LibraryTurn(1));
+        assert_eq!(kept(&app), Some(Technique::TwoStringKite), "turned");
+        app.apply(Action::LibraryBack);
+        assert_eq!(kept(&app), None);
     }
 
     #[test]
