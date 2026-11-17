@@ -12,7 +12,6 @@ use tudoku_core::{deal, game, library, logic, store, sudoku, tutor};
 use std::io::{self, IsTerminal, Stdout};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -28,7 +27,7 @@ use crossterm::{
 use ratatui::{Terminal, backend::CrosstermBackend};
 
 use crate::app::App;
-use crate::deal::{Deal, Difficulty};
+use crate::deal::Difficulty;
 use crate::game::Game;
 use crate::logic::Technique;
 use crate::store::Store;
@@ -79,7 +78,7 @@ fn restore_terminal() {
 /// Restore the terminal before a main-thread panic message prints, so it
 /// lands on the normal screen instead of vanishing with the alternate one.
 /// Panics on the dealing threads leave the screen alone: the main thread
-/// survives them and deals the puzzle itself.
+/// outlives them and deals the puzzle itself.
 fn install_panic_hook() {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -164,8 +163,6 @@ fn event_loop(
     stop: &AtomicBool,
 ) -> io::Result<()> {
     let mut hits = Vec::new();
-    // A puzzle being dealt on background threads (fully offline).
-    let mut dealer: Option<mpsc::Receiver<Deal>> = None;
     // Redraw after anything that can change the screen, and every tick for
     // the clock, but not for every report of the mouse moving.
     let mut dirty = true;
@@ -174,37 +171,25 @@ fn event_loop(
     while !stop.load(Ordering::Relaxed) {
         app.autosave();
         if let Some(level) = app.dealing {
-            match &dealer {
-                None => {
-                    let (tx, rx) = mpsc::channel();
-                    // Sending only fails if the app quit meanwhile.
-                    thread::spawn(move || {
-                        let _ = tx.send(deal::deal_fast(level));
-                    });
-                    dealer = Some(rx);
+            // Dealt (fully offline) before the next frame: it takes
+            // milliseconds, so the board is simply the next thing drawn.
+            // On a thread of its own so a panicking worker can't take the
+            // game down with it.
+            let dealt = match thread::spawn(move || deal::deal_fast(level)).join() {
+                Ok(d) => d,
+                // A worker panicked: deal here instead, and repaint over
+                // the panic message it printed.
+                Err(_) => {
+                    term.clear()?;
+                    deal::deal(level, &mut rand::rng())
                 }
-                Some(rx) => {
-                    let dealt = match rx.try_recv() {
-                        Ok(d) => Some(d),
-                        Err(TryRecvError::Empty) => None,
-                        // The dealer died without a puzzle (a worker
-                        // panicked): deal here rather than spin forever,
-                        // and repaint over the panic message it printed.
-                        Err(TryRecvError::Disconnected) => {
-                            term.clear()?;
-                            Some(deal::deal(level, &mut rand::rng()))
-                        }
-                    };
-                    if let Some(d) = dealt {
-                        app.start_game(Game::new(level, d.puzzle, d.solution));
-                        dealer = None;
-                    }
-                }
-            }
+            };
+            app.start_game(Game::new(level, dealt.puzzle, dealt.solution));
+            dirty = true;
         }
 
-        // Poll so the timer (or the dealing spinner) refreshes on its own.
-        let tick = Duration::from_millis(if app.dealing.is_some() { 50 } else { 250 });
+        // Poll so the timer refreshes on its own.
+        let tick = Duration::from_millis(250);
         if dirty || drawn.elapsed() >= tick {
             let size = term.size()?;
             app.set_fits(size.width >= ui::MIN_W && size.height >= ui::MIN_H);

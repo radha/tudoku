@@ -165,7 +165,8 @@ pub struct App {
     /// Highlighted row of the title-screen menu (see [`App::menu_rows`]).
     pub menu_cursor: usize,
     pub last_level: Difficulty,
-    /// A puzzle at this level is being dealt.
+    /// A puzzle at this level has been asked for; the event loop deals it
+    /// before drawing the next frame.
     pub dealing: Option<Difficulty>,
     /// A saved game, offered as "Continue" on the title screen.
     pub resume: Option<Game>,
@@ -279,9 +280,9 @@ impl App {
         if let Char('q' | 'Q') = code {
             return Some(Action::Quit);
         }
-        // Nothing else while dealing, or while the screen is too small to
-        // show what a key would do.
-        if self.dealing.is_some() || !self.fits {
+        // Nothing else while the screen is too small to show what a key
+        // would do.
+        if !self.fits {
             return None;
         }
         let action = match self.top() {
@@ -393,8 +394,6 @@ impl App {
     pub fn apply(&mut self, action: Action) -> bool {
         match action {
             Action::Quit => return true,
-            // Only quitting works while a puzzle is being dealt.
-            _ if self.dealing.is_some() => {}
             Action::Board(b) => self.play(b),
             Action::NewGame => self.new_game(self.last_level),
             Action::StartLevel(level) => self.new_game(level),
@@ -648,7 +647,7 @@ impl App {
     /// Hide the board and stop the clock, on top of whatever is open.
     pub fn pause(&mut self) {
         let Some(g) = &mut self.game else { return };
-        if g.completed || g.paused || self.dealing.is_some() {
+        if g.completed || g.paused {
             return;
         }
         g.set_paused(true);
@@ -857,7 +856,7 @@ impl App {
         self.new_best = false;
         self.overlays.clear();
         self.save();
-        // Dealt while the player was in another window, or with the
+        // Started while the player is in another window, or with the
         // window too small to show it: wait for them.
         if !self.focused || !self.fits {
             self.pause();
@@ -1083,19 +1082,6 @@ mod tests {
         assert_eq!(app.dealing, Some(Difficulty::Medium));
     }
 
-    #[test]
-    fn input_is_ignored_while_dealing_except_quit() {
-        let mut app = app_with_game(Difficulty::Easy);
-        key(&mut app, KeyCode::Char('N'));
-        assert!(app.dealing.is_some());
-        let before = app.game.as_ref().unwrap().values;
-        key(&mut app, KeyCode::Char('9'));
-        key(&mut app, KeyCode::Char('?'));
-        assert_eq!(app.game.as_ref().unwrap().values, before);
-        assert!(app.overlays.is_empty());
-        assert!(key(&mut app, KeyCode::Char('q')));
-    }
-
     /// An app backed by a real (temporary) save directory.
     fn app_on_disk(dir: &tempfile::TempDir) -> App {
         App::new(Store::at(dir.path()))
@@ -1213,10 +1199,9 @@ mod tests {
     }
 
     #[test]
-    fn a_puzzle_dealt_while_away_starts_paused() {
+    fn a_puzzle_started_while_away_starts_paused() {
         let mut app = App::new(Store::none());
-        key(&mut app, KeyCode::Char('1'));
-        app.set_focus(false); // dealing: nothing to pause yet
+        app.set_focus(false); // no game yet: nothing to pause
         let (p, s) = test_board();
         app.start_game(Game::new(Difficulty::Easy, p, s));
         assert!(app.game.as_ref().unwrap().paused);

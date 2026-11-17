@@ -859,30 +859,6 @@ fn draw_stats(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-fn draw_dealing(frame: &mut Frame, area: Rect, level: Difficulty) {
-    const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-    let tick = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() / 80);
-    let spin = SPINNER[(tick % SPINNER.len() as u128) as usize];
-    let (_, inner) = popup(frame, area, 40, 6, "Dealing");
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(""),
-            Line::styled(
-                format!("{spin} shuffling a fresh {} puzzle", level.name()),
-                Style::default().fg(INK),
-            ),
-            Line::styled(
-                "graded by technique, logic only",
-                Style::default().fg(MUTED),
-            ),
-        ])
-        .alignment(Alignment::Center),
-        inner,
-    );
-}
-
 /// Draw one overlay and register its click areas. Every overlay first
 /// covers the whole screen, so nothing underneath can be clicked.
 fn draw_overlay(frame: &mut Frame, area: Rect, app: &App, overlay: Overlay, hits: &mut Vec<Hit>) {
@@ -1272,10 +1248,6 @@ pub fn render(frame: &mut Frame, app: &App) -> Vec<Hit> {
     if let Some(overlay) = app.top() {
         draw_overlay(frame, area, app, overlay, &mut hits);
     }
-    if let Some(level) = app.dealing {
-        push_hit(&mut hits, area, None);
-        draw_dealing(frame, area, level);
-    }
     hits
 }
 
@@ -1540,17 +1512,6 @@ mod tests {
     }
 
     #[test]
-    fn dealing_blocks_every_click() {
-        let mut app = app_with_game();
-        app.dealing = Some(Difficulty::Hard);
-        let (lines, hits) = draw(&app, W, 50);
-        assert!(text(&lines).contains("Dealing"));
-        for (x, y) in [(2, 48), (10, 8), (50, 25)] {
-            assert_eq!(hit_at(&hits, x, y), None);
-        }
-    }
-
-    #[test]
     fn help_popup_lists_controls() {
         let mut app = app_with_game();
         app.overlays.push(Overlay::Help);
@@ -1595,17 +1556,6 @@ mod tests {
         let header = text(&lines[..2]);
         assert!(header.contains("Couldn't save: Read-only"), "{header}");
         assert!(header.contains('…'), "a clipped message says so: {header}");
-    }
-
-    #[test]
-    fn dealing_names_every_level_in_full() {
-        for level in Difficulty::ALL {
-            let mut app = app_with_game();
-            app.dealing = Some(level);
-            let (lines, _) = draw(&app, MIN_W, MIN_H);
-            let want = format!("fresh {} puzzle", level.name());
-            assert!(text(&lines).contains(&want), "{level:?}");
-        }
     }
 
     #[test]
