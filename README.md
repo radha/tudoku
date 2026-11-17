@@ -10,6 +10,8 @@ Play with the keyboard, the mouse, or both.
 cargo run --release
 ```
 
+On x86-64, builds target x86-64-v2 (any CPU from about 2009 on); see `.cargo/config.toml`.
+
 Requires a terminal at least **103x39** (every cell gets its own frame, and
 the grid is drawn square on typical 2:1 fonts). Shrink the window below that
 mid-game and the game pauses until it's big enough again. A 24-bit-color terminal
@@ -38,9 +40,9 @@ thread; every level typically takes a few milliseconds.
 
 ## Saves and best times
 
-Your game is saved after every move, and every few seconds while you
-think, so quitting, closing the window or a crash never costs you a
-puzzle. `m` takes you back to the title screen mid-game, and next launch
+Your game is saved after every move, and every 30 seconds while you
+think (which keeps the clock and selection), so quitting, closing the
+window or a crash never costs you a puzzle. `m` takes you back to the title screen mid-game, and next launch
 the title screen offers **Continue** (Enter or `c`). Dealing a new puzzle
 over a game with anything on it asks first.
 

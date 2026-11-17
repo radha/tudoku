@@ -120,8 +120,8 @@ fn stop_on_signals() -> io::Result<Arc<AtomicBool>> {
 
 /// If the terminal goes away and no SIGHUP reaches us, crossterm's input
 /// loop spins forever on end-of-file and the main thread never gets
-/// control back. Watch for that from the side and exit; the autosave
-/// keeps the game to within a few seconds.
+/// control back. Watch for that from the side and exit; every edit has
+/// already been saved, so at most the last 30 s of clock and selection are lost.
 fn exit_if_terminal_vanishes() {
     if !io::stdin().is_terminal() {
         return; // input comes from /dev/tty some other way; nothing to watch
@@ -291,11 +291,22 @@ impl Shown {
         let Some(g) = &app.game else {
             return Shown::default();
         };
+        if header_hidden(app, g) {
+            return Shown::default();
+        }
         Shown {
             secs: running(g).then(|| g.elapsed().as_secs()),
             message: g.message(MESSAGE_TTL).is_some(),
         }
     }
+}
+
+/// The tutor's worked example replaces the whole game header (clock and
+/// message) while it is up, so neither is on screen to go stale. `ui::draw_game`
+/// shows the example only while the game is not paused; paused, the normal
+/// header is drawn again.
+fn header_hidden(app: &App, g: &Game) -> bool {
+    app.example.is_some() && !g.paused
 }
 
 fn running(g: &Game) -> bool {
@@ -306,7 +317,9 @@ fn running(g: &Game) -> bool {
 /// [`MAX_WAIT`].
 fn next_wake(app: &App) -> Duration {
     let mut wait = MAX_WAIT;
-    if let Some(g) = &app.game {
+    // Nothing time-dependent is drawn behind the example screen, so the 1 s
+    // cap is only for the stop flag and autosave. The clock itself keeps running.
+    if let Some(g) = app.game.as_ref().filter(|g| !header_hidden(app, g)) {
         if running(g) {
             let into = Duration::from_nanos(u64::from(g.elapsed().subsec_nanos()));
             wait = wait.min(Duration::from_secs(1) - into + Duration::from_millis(1));

@@ -27,8 +27,10 @@ use crate::sudoku::{col_of, row_of};
 use crate::tutor::examples::{self, Example};
 use crate::tutor::{self, Advice, NoteMode, rules};
 
-/// How often a running game is saved even without edits.
-const AUTOSAVE_EVERY: Duration = Duration::from_secs(5);
+/// How often a running game is saved even without edits. Edits, quitting
+/// and signals already save at once; this only keeps the clock and selection
+/// from going stale against a hard kill or power cut.
+const AUTOSAVE_EVERY: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Overlay {

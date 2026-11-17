@@ -1,0 +1,4 @@
+# The solver leans on count_ones; baseline x86-64 has no POPCNT, v2 does.
+# Binaries are built per machine, never shared, so a v2 floor is safe.
+[target.'cfg(target_arch = "x86_64")']
+rustflags = ["-C", "target-cpu=x86-64-v2"]
