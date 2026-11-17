@@ -7,17 +7,27 @@ use super::{
 };
 use crate::sudoku::{CELLS, HOUSES, peers};
 
+/// The peers of `pivot` that `keep` accepts, and how many there are.
+fn peers_where(pivot: usize, mut keep: impl FnMut(usize) -> bool) -> ([usize; 20], usize) {
+    let mut found = [0; 20];
+    let mut count = 0;
+    for p in peers(pivot).filter(|&p| keep(p)) {
+        found[count] = p;
+        count += 1;
+    }
+    (found, count)
+}
+
 impl Grid {
     /// Pivot {x,y} sees pincers {x,z} and {y,z}: whichever value the pivot
     /// takes, one pincer is z, so cells seeing both pincers can't be z.
     pub(super) fn xy_wing(&self) -> Option<Step> {
         for pivot in (0..CELLS).filter(|&i| self.cands[i].count_ones() == 2) {
             let pc = self.cands[pivot];
-            let wings: Vec<usize> = peers(pivot)
-                .filter(|&p| {
-                    self.cands[p].count_ones() == 2 && (self.cands[p] & pc).count_ones() == 1
-                })
-                .collect();
+            let (found, count) = peers_where(pivot, |p| {
+                self.cands[p].count_ones() == 2 && (self.cands[p] & pc).count_ones() == 1
+            });
+            let wings = &found[..count];
             for (n, &a) in wings.iter().enumerate() {
                 for &b in &wings[n + 1..] {
                     let (ca, cb) = (self.cands[a], self.cands[b]);
@@ -35,14 +45,16 @@ impl Grid {
                     let (a, b) = if ca & pc < cb & pc { (a, b) } else { (b, a) };
                     let [x, y, z] =
                         [self.cands[a] & pc, self.cands[b] & pc, z].map(u16::trailing_zeros);
-                    let why = format!(
-                        "{} is {x} or {y}. If {x}, {} is {z}; if {y}, {} is {z}. \
+                    let why = self.why(|| {
+                        format!(
+                            "{} is {x} or {y}. If {x}, {} is {z}; if {y}, {} is {z}. \
                          Either way one is {z}, so {} can't be {z}.",
-                        rc(pivot),
-                        rc(a),
-                        rc(b),
-                        cell_list(&targets)
-                    );
+                            rc(pivot),
+                            rc(a),
+                            rc(b),
+                            cell_list(&targets)
+                        )
+                    });
                     if let Some(step) = self.wing(Technique::XYWing, pivot, [a, b], z, targets, why)
                     {
                         return Some(step);
@@ -58,9 +70,10 @@ impl Grid {
     pub(super) fn xyz_wing(&self) -> Option<Step> {
         for pivot in (0..CELLS).filter(|&i| self.cands[i].count_ones() == 3) {
             let pc = self.cands[pivot];
-            let wings: Vec<usize> = peers(pivot)
-                .filter(|&p| self.cands[p].count_ones() == 2 && self.cands[p] & !pc == 0)
-                .collect();
+            let (found, count) = peers_where(pivot, |p| {
+                self.cands[p].count_ones() == 2 && self.cands[p] & !pc == 0
+            });
+            let wings = &found[..count];
             for (n, &a) in wings.iter().enumerate() {
                 for &b in &wings[n + 1..] {
                     let (ca, cb) = (self.cands[a], self.cands[b]);
@@ -78,16 +91,18 @@ impl Grid {
                     let (a, b) = if ca & !z < cb & !z { (a, b) } else { (b, a) };
                     let [x, y, z] =
                         [self.cands[a] & !z, self.cands[b] & !z, z].map(u16::trailing_zeros);
-                    let why = format!(
-                        "{} is {}. If {x}, {} is {z}; if {y}, {} is {z}; if {z}, {} itself is. \
+                    let why = self.why(|| {
+                        format!(
+                            "{} is {}. If {x}, {} is {z}; if {y}, {} is {z}; if {z}, {} itself is. \
                          Either way one of the three is {z}, so {} can't be {z}.",
-                        rc(pivot),
-                        digit_choice(pc),
-                        rc(a),
-                        rc(b),
-                        rc(pivot),
-                        cell_list(&targets)
-                    );
+                            rc(pivot),
+                            digit_choice(pc),
+                            rc(a),
+                            rc(b),
+                            rc(pivot),
+                            cell_list(&targets)
+                        )
+                    });
                     if let Some(step) =
                         self.wing(Technique::XYZWing, pivot, [a, b], z, targets, why)
                     {
@@ -136,20 +151,22 @@ impl Grid {
                             continue;
                         };
                         let x = x as u8;
-                        let why = format!(
-                            "{} and {} are each {x} or {y}. If {} is {x}, {} isn't, so {} is, \
+                        let why = self.why(|| {
+                            format!(
+                                "{} and {} are each {x} or {y}. If {} is {x}, {} isn't, so {} is, \
                              and {} isn't. Either way one of {} and {} is {y}, \
                              so {} can't be {y}.",
-                            rc(a),
-                            rc(b),
-                            rc(a),
-                            rc(p),
-                            rc(q),
-                            rc(b),
-                            rc(a),
-                            rc(b),
-                            cell_list(&live)
-                        );
+                                rc(a),
+                                rc(b),
+                                rc(a),
+                                rc(p),
+                                rc(q),
+                                rc(b),
+                                rc(a),
+                                rc(b),
+                                cell_list(&live)
+                            )
+                        });
                         let cells = vec![a, b, p, q];
                         let mut marks = self.marks([a, b], 1 << y, Role::Key);
                         marks.extend(self.marks(cells.iter().copied(), 1 << x, Role::Other));
@@ -158,7 +175,7 @@ impl Grid {
                             to: (to, x),
                             kind,
                         };
-                        let pattern = Pattern {
+                        let pattern = self.pattern(|| Pattern {
                             cells,
                             houses: vec![house],
                             marks,
@@ -168,7 +185,7 @@ impl Grid {
                                 link(q, b, LinkKind::Weak),
                             ],
                             ..Pattern::default()
-                        };
+                        });
                         let removals = live.iter().map(|&c| (c, 1 << y)).collect();
                         if let Some(step) =
                             self.eliminating(Technique::WWing, removals, pattern, why)
@@ -190,9 +207,10 @@ impl Grid {
         let small = |c: usize| (2..=4).contains(&self.cands[c].count_ones());
         for pivot in (0..CELLS).filter(|&c| small(c)) {
             let pc = self.cands[pivot];
-            let wings: Vec<usize> = peers(pivot)
-                .filter(|&p| small(p) && (pc | self.cands[p]).count_ones() <= 4)
-                .collect();
+            let (found, count) = peers_where(pivot, |p| {
+                small(p) && (pc | self.cands[p]).count_ones() <= 4
+            });
+            let wings = &found[..count];
             for (i, &a) in wings.iter().enumerate() {
                 let ua = pc | self.cands[a];
                 for (j, &b) in wings.iter().enumerate().skip(i + 1) {
@@ -219,23 +237,28 @@ impl Grid {
     /// The step for four cells fitting exactly the digits in `union`, if
     /// one of them is the loose digit and something can be removed.
     fn wxyz(&self, cells: [usize; 4], union: u16) -> Option<Step> {
-        let holders = |d: usize| -> Vec<usize> {
-            cells
-                .iter()
-                .copied()
-                .filter(|&c| self.cands[c] & (1 << d) != 0)
-                .collect()
+        // Which of the four cells (by position) hold digit `d`.
+        let holders = |d: usize| -> usize {
+            (0..4)
+                .filter(|&k| self.cands[cells[k]] & (1 << d) != 0)
+                .fold(0, |m, k| m | 1 << k)
         };
-        let locked = |held: &[usize]| {
-            held.iter()
-                .enumerate()
-                .all(|(n, &p)| held[n + 1..].iter().all(|&q| sees(p, q)))
+        let locked = |held: usize| {
+            (0..4).filter(|&p| held >> p & 1 != 0).all(|p| {
+                (p + 1..4)
+                    .filter(|&q| held >> q & 1 != 0)
+                    .all(|q| sees(cells[p], cells[q]))
+            })
         };
         for z in bits(union) {
-            let zcells = holders(z);
-            if zcells.len() < 2 || !bits(union & !(1 << z)).all(|d| locked(&holders(d))) {
+            let zheld = holders(z);
+            if zheld.count_ones() < 2 || !bits(union & !(1 << z)).all(|d| locked(holders(d))) {
                 continue;
             }
+            let zcells: Vec<usize> = (0..4)
+                .filter(|&k| zheld >> k & 1 != 0)
+                .map(|k| cells[k])
+                .collect();
             let zbit = 1 << z;
             let targets: Vec<usize> = peers(zcells[0])
                 .filter(|&t| {
@@ -247,20 +270,22 @@ impl Grid {
             if targets.is_empty() {
                 continue;
             }
-            let why = format!(
-                "{} fit only {} between them. Each digit but {z} can fill just one of them, \
+            let why = self.why(|| {
+                format!(
+                    "{} fit only {} between them. Each digit but {z} can fill just one of them, \
                  so those three can't fill all four. One is {z}, so {} can't be {z}.",
-                cell_list(&cells),
-                digit_list(union),
-                cell_list(&targets)
-            );
+                    cell_list(&cells),
+                    digit_list(union),
+                    cell_list(&targets)
+                )
+            });
             let mut marks = self.marks(cells, zbit, Role::Key);
             marks.extend(self.marks(cells, !zbit, Role::Other));
-            let pattern = Pattern {
+            let pattern = self.pattern(|| Pattern {
                 cells: cells.to_vec(),
                 marks,
                 ..Pattern::default()
-            };
+            });
             let removals = targets.into_iter().map(|t| (t, zbit)).collect();
             if let Some(step) = self.eliminating(Technique::WXYZWing, removals, pattern, why) {
                 return Some(step);
@@ -295,12 +320,12 @@ impl Grid {
                 }
             })
             .to_vec();
-        let pattern = Pattern {
+        let pattern = self.pattern(|| Pattern {
             cells,
             marks,
             links,
             ..Pattern::default()
-        };
+        });
         let removals = targets.into_iter().map(|c| (c, zbit)).collect();
         self.eliminating(technique, removals, pattern, why)
     }

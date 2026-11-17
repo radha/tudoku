@@ -225,18 +225,20 @@ impl Grid {
 
     fn als_xz_step(&self, a: &Als, b: &Als, x: usize, z: usize, targets: Cells) -> Option<Step> {
         let targets: Vec<usize> = cells_in(targets).collect();
-        let why = format!(
-            "A = {}; B = {}. Every {x} in A sees every {x} in B, so at least one set has no \
+        let why = self.why(|| {
+            format!(
+                "A = {}; B = {}. Every {x} in A sees every {x} in B, so at least one set has no \
              {x} and holds all its other digits. So A or B holds {z}, and {}",
-            a.describe(),
-            b.describe(),
-            conclusion(&targets, z),
-        );
+                a.describe(),
+                b.describe(),
+                conclusion(&targets, z),
+            )
+        });
         let cells = cells_of(&[a, b]);
         let mut marks = self.marks(cells.iter().copied(), 1 << z, Role::Key);
         marks.extend(self.marks(cells.iter().copied(), 1 << x, Role::Other));
         let x8 = x as u8;
-        let pattern = Pattern {
+        let pattern = self.pattern(|| Pattern {
             houses: houses_of(&[a, b]),
             cells,
             marks,
@@ -246,7 +248,7 @@ impl Grid {
                 kind: LinkKind::Weak,
             }],
             ..Pattern::default()
-        };
+        });
         let removals = targets.iter().map(|&t| (t, 1 << z)).collect();
         self.eliminating(Technique::AlsXz, removals, pattern, why)
     }
@@ -310,15 +312,17 @@ impl Grid {
         targets: Cells,
     ) -> Option<Step> {
         let targets: Vec<usize> = cells_in(targets).collect();
-        let why = format!(
-            "A = {}; B = {}; C = {}. C holds {x} or {y}. Every {x} in C sees every {x} in A, \
+        let why = self.why(|| {
+            format!(
+                "A = {}; B = {}; C = {}. C holds {x} or {y}. Every {x} in C sees every {x} in A, \
              and every {y} in C every {y} in B, so A has no {x} or B has no {y}, and that set \
              holds all its other digits. So A or B holds {z}, and {}",
-            a.describe(),
-            b.describe(),
-            c.describe(),
-            conclusion(&targets, z),
-        );
+                a.describe(),
+                b.describe(),
+                c.describe(),
+                conclusion(&targets, z),
+            )
+        });
         let mut marks = self.marks(cells_of(&[a, b]), 1 << z, Role::Key);
         marks.extend(self.marks(cells_of(&[a, c]), 1 << x, Role::Other));
         marks.extend(self.marks(cells_of(&[b, c]), 1 << y, Role::Other));
@@ -327,13 +331,13 @@ impl Grid {
             to: (to.first(d), d as u8),
             kind: LinkKind::Weak,
         };
-        let pattern = Pattern {
+        let pattern = self.pattern(|| Pattern {
             houses: houses_of(&[a, b, c]),
             cells: cells_of(&[a, b, c]),
             marks,
             links: vec![link(a, c, x), link(c, b, y)],
             ..Pattern::default()
-        };
+        });
         let removals = targets.iter().map(|&t| (t, 1 << z)).collect();
         self.eliminating(Technique::AlsXyWing, removals, pattern, why)
     }
@@ -435,31 +439,33 @@ impl Grid {
         } else {
             format!(", and {} in the shared ones", digit_list(rest))
         };
-        let why = format!(
-            "{} fit only {}. With {} ({}) and {} ({}), these {count} cells hold the {count} \
+        let why = self.why(|| {
+            format!(
+                "{} fit only {}. With {} ({}) and {} ({}), these {count} cells hold the {count} \
              digits once each: {} in their {} cells, {}{} in their {} cells{rest_part}. So \
              {cuts}.",
-            cell_list(core),
-            digit_list(digits),
-            rc(l),
-            digit_choice(dl),
-            rc(bx),
-            digit_choice(db),
-            digit_list(dl),
-            house_name(lh),
-            if rest == 0 { "and " } else { "" },
-            digit_list(db),
-            house_name(bh),
-        );
+                cell_list(core),
+                digit_list(digits),
+                rc(l),
+                digit_choice(dl),
+                rc(bx),
+                digit_choice(db),
+                digit_list(dl),
+                house_name(lh),
+                if rest == 0 { "and " } else { "" },
+                digit_list(db),
+                house_name(bh),
+            )
+        });
         let mut marks = self.marks(core.iter().copied(), digits, Role::Key);
         marks.extend(self.marks([l], dl, Role::Other));
         marks.extend(self.marks([bx], db, Role::Other));
-        let pattern = Pattern {
+        let pattern = self.pattern(|| Pattern {
             houses: vec![bh, lh],
             cells: pattern_cells,
             marks,
             ..Pattern::default()
-        };
+        });
         self.eliminating(Technique::SueDeCoq, removals, pattern, why)
     }
 
@@ -531,15 +537,17 @@ impl Grid {
                 format!("{}, {seers} {}", p.describe(), rc(stem))
             })
             .collect();
-        let why = format!(
-            "{} is {}. Petals: {}. Whichever digit {} is, its petal has none of it and holds \
+        let why = self.why(|| {
+            format!(
+                "{} is {}. Petals: {}. Whichever digit {} is, its petal has none of it and holds \
              all its other digits. So one of the petals holds {z}, and {}",
-            rc(stem),
-            digit_choice(stem_digits),
-            described.join("; "),
-            rc(stem),
-            conclusion(&targets, z),
-        );
+                rc(stem),
+                digit_choice(stem_digits),
+                described.join("; "),
+                rc(stem),
+                conclusion(&targets, z),
+            )
+        });
         let mut cells = vec![stem];
         cells.extend(petals.iter().flat_map(|p| p.cells.iter().copied()));
         let mut marks = self.marks(cells_of(petals), 1 << z, Role::Key);
@@ -553,13 +561,13 @@ impl Grid {
                 kind: LinkKind::Weak,
             });
         }
-        let pattern = Pattern {
+        let pattern = self.pattern(|| Pattern {
             houses: houses_of(petals),
             cells,
             marks,
             links,
             ..Pattern::default()
-        };
+        });
         let removals = targets.iter().map(|&t| (t, 1 << z)).collect();
         self.eliminating(Technique::DeathBlossom, removals, pattern, why)
     }

@@ -95,23 +95,25 @@ impl Grid {
                                 continue;
                             }
                             let targets: Vec<usize> = cells_in(seeing).collect();
-                            let why = format!(
-                                "In {}, {digit} is {} or {}; in {}, it is {} or {}. \
+                            let why = self.why(|| {
+                                format!(
+                                    "In {}, {digit} is {} or {}; in {}, it is {} or {}. \
                                  {} and {} share {}, so they can't both be {digit}. \
                                  So {} or {} is {digit}, and {} can't be.",
-                                house_name(h1),
-                                rc(a1),
-                                rc(a2),
-                                house_name(h2),
-                                rc(b1),
-                                rc(b2),
-                                rc(a2),
-                                rc(b1),
-                                house_name(shared),
-                                rc(a1),
-                                rc(b2),
-                                cell_list(&targets)
-                            );
+                                    house_name(h1),
+                                    rc(a1),
+                                    rc(a2),
+                                    house_name(h2),
+                                    rc(b1),
+                                    rc(b2),
+                                    rc(a2),
+                                    rc(b1),
+                                    house_name(shared),
+                                    rc(a1),
+                                    rc(b2),
+                                    cell_list(&targets)
+                                )
+                            });
                             let mut marks = self.marks([a1, b2], bit, Role::Key);
                             marks.extend(self.marks([a2, b1], bit, Role::Other));
                             let link = |from, to, kind| Link {
@@ -119,7 +121,7 @@ impl Grid {
                                 to: (to, digit),
                                 kind,
                             };
-                            let pattern = Pattern {
+                            let pattern = self.pattern(|| Pattern {
                                 digit: Some(digit),
                                 houses,
                                 marks,
@@ -129,7 +131,7 @@ impl Grid {
                                     link(a2, b1, LinkKind::Weak),
                                 ],
                                 ..Pattern::default()
-                            };
+                            });
                             let removals = targets.iter().map(|&c| (c, bit)).collect();
                             if let Some(step) = self.eliminating(technique, removals, pattern, why)
                             {
@@ -194,30 +196,32 @@ impl Grid {
                                     } else {
                                         (format!("row {}", r + 1), format!("column {}", c + 1), x)
                                     };
-                                    let why = format!(
-                                        "In box {}, every {digit} is in {rn} or {cn}. \
+                                    let why = self.why(|| {
+                                        format!(
+                                            "In box {}, every {digit} is in {rn} or {cn}. \
                                          In {} {}, {digit} is {} or {}. \
                                          If {} is {digit}, it fills {rn}, so the box's {digit} \
                                          is in {cn}, which {} sees. If {} is {digit}, {} sees \
                                          it. Either way {} can't be {digit}.",
-                                        b + 1,
-                                        if swap { "row" } else { "column" },
-                                        xn + 1,
-                                        rc(near),
-                                        rc(far),
-                                        rc(near),
-                                        rc(target),
-                                        rc(far),
-                                        rc(target),
-                                        rc(target),
-                                    );
+                                            b + 1,
+                                            if swap { "row" } else { "column" },
+                                            xn + 1,
+                                            rc(near),
+                                            rc(far),
+                                            rc(near),
+                                            rc(target),
+                                            rc(far),
+                                            rc(target),
+                                            rc(target),
+                                        )
+                                    });
                                     let mut marks = self.marks([near, far], bit, Role::Key);
                                     marks.extend(self.marks(
                                         spots.iter().copied(),
                                         bit,
                                         Role::Other,
                                     ));
-                                    let pattern = Pattern {
+                                    let pattern = self.pattern(|| Pattern {
                                         digit: Some(digit),
                                         houses: vec![BOXES + b, line],
                                         marks,
@@ -227,7 +231,7 @@ impl Grid {
                                             kind: LinkKind::Strong,
                                         }],
                                         ..Pattern::default()
-                                    };
+                                    });
                                     let removals = vec![(target, bit)];
                                     if let Some(step) = self.eliminating(
                                         Technique::EmptyRectangle,

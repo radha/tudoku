@@ -39,7 +39,7 @@ impl Grid {
                     let spots = bits(set).flat_map(|l| bits(lines[l]).map(move |c| at(l, c)));
                     // Rows are houses 0..N and columns N..2N.
                     let cover_houses = N - base;
-                    let pattern = Pattern {
+                    let pattern = self.pattern(|| Pattern {
                         digit: Some(digit),
                         houses: bits(set)
                             .map(|l| base + l)
@@ -47,19 +47,21 @@ impl Grid {
                             .collect(),
                         marks: self.marks(spots, bit, Role::Key),
                         ..Pattern::default()
-                    };
+                    });
                     let (bases, covers) = if base == 0 {
                         ("rows", "columns")
                     } else {
                         ("columns", "rows")
                     };
                     let numbers = |m: u16| listing(bits(m).map(|l| (l + 1).to_string()), "and");
-                    let why = format!(
-                        "In {bases} {}, every {digit} is in {covers} {}, \
+                    let why = self.why(|| {
+                        format!(
+                            "In {bases} {}, every {digit} is in {covers} {}, \
                          so the rest of those {covers} can't be {digit}.",
-                        numbers(set),
-                        numbers(cover)
-                    );
+                            numbers(set),
+                            numbers(cover)
+                        )
+                    });
                     if let Some(step) = self.eliminating(technique, removals, pattern, why) {
                         return Some(step);
                     }
@@ -123,7 +125,7 @@ impl Grid {
                         let cover_houses = N - base;
                         let mut marks = self.marks(spots, bit, Role::Key);
                         marks.extend(self.marks(fins.iter().copied(), bit, Role::Other));
-                        let pattern = Pattern {
+                        let pattern = self.pattern(|| Pattern {
                             digit: Some(digit),
                             houses: bits(set)
                                 .map(|l| base + l)
@@ -132,7 +134,7 @@ impl Grid {
                                 .collect(),
                             marks,
                             ..Pattern::default()
-                        };
+                        });
                         let (bases, covers_name) = if base == 0 {
                             ("rows", "columns")
                         } else {
@@ -147,7 +149,7 @@ impl Grid {
                         };
                         let kind = if sashimi { " (a sashimi fish)" } else { "" };
                         let boxn = fin_box + 1;
-                        let why = format!(
+                        let why = self.why(|| format!(
                             "Look at {bases} {} and {covers_name} {}{kind}. The fin{plural} {} \
                              stick{s_verb} out in box {boxn}. If the fin{plural} {not} {digit}, every \
                              {digit} in those {bases} is in those {covers_name}, so those \
@@ -158,7 +160,7 @@ impl Grid {
                             numbers(cover),
                             cell_list(&fins),
                             a_digit(digit),
-                        );
+                        ));
                         if let Some(step) = self.eliminating(technique, removals, pattern, why) {
                             return Some(step);
                         }

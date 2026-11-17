@@ -103,19 +103,22 @@ impl Grid {
         pair: u16,
     ) -> Option<Step> {
         let odd = corners[odd];
-        let why = format!(
-            "{} are only {}. If {} were {} too, the four cells could swap {} for a \
+        let why = self.why(|| {
+            format!(
+                "{} are only {}. If {} were {} too, the four cells could swap {} for a \
              second solution, but the puzzle has just one (Unique Rectangle type 1). \
              So {} can't be {}.",
-            cell_list(&floor.iter().map(|&k| corners[k]).collect::<Vec<_>>()),
-            digit_choice(pair),
-            rc(odd),
-            digit_choice(pair),
-            digit_list(pair),
-            rc(odd),
-            digit_choice(pair),
-        );
-        let pattern = self.rectangle_pattern(corners, floor, pair, &[], 0, Vec::new());
+                cell_list(&floor.iter().map(|&k| corners[k]).collect::<Vec<_>>()),
+                digit_choice(pair),
+                rc(odd),
+                digit_choice(pair),
+                digit_list(pair),
+                rc(odd),
+                digit_choice(pair),
+            )
+        });
+        let pattern =
+            self.pattern(|| self.rectangle_pattern(corners, floor, pair, &[], 0, Vec::new()));
         self.eliminating(Technique::UniqueRectangle1, vec![(odd, pair)], pattern, why)
     }
 
@@ -139,22 +142,25 @@ impl Grid {
         if targets.is_empty() {
             return None;
         }
-        let why = format!(
-            "{} are only {}. If neither of {} and {} were {}, the four cells could swap {} \
+        let why = self.why(|| {
+            format!(
+                "{} are only {}. If neither of {} and {} were {}, the four cells could swap {} \
              for a second solution, but the puzzle has just one (Unique Rectangle type 2). \
              So one of them is {}, and {} can't be {}.",
-            cell_list(&floor.iter().map(|&k| corners[k]).collect::<Vec<_>>()),
-            digit_choice(pair),
-            rc(a),
-            rc(b),
-            digit_list(z),
-            digit_list(pair),
-            digit_list(z),
-            cell_list(&targets),
-            digit_list(z),
-        );
+                cell_list(&floor.iter().map(|&k| corners[k]).collect::<Vec<_>>()),
+                digit_choice(pair),
+                rc(a),
+                rc(b),
+                digit_list(z),
+                digit_list(pair),
+                digit_list(z),
+                cell_list(&targets),
+                digit_list(z),
+            )
+        });
         // The roof lights its extra digit, the one the step is about.
-        let pattern = self.rectangle_pattern(corners, floor, pair, roof, z, Vec::new());
+        let pattern =
+            self.pattern(|| self.rectangle_pattern(corners, floor, pair, roof, z, Vec::new()));
         let removals = targets.into_iter().map(|c| (c, z)).collect();
         self.eliminating(Technique::UniqueRectangle2, removals, pattern, why)
     }
@@ -201,32 +207,37 @@ impl Grid {
                     if targets.is_empty() {
                         continue;
                     }
-                    let why = format!(
-                        "{} are only {}. If neither of {} and {} were {}, the four cells could \
+                    let why = self.why(|| {
+                        format!(
+                            "{} are only {}. If neither of {} and {} were {}, the four cells could \
                          swap {} for a second solution, but the puzzle has just one \
                          (Unique Rectangle type 3). So one of them is {}. As one cell, with \
                          {} they make {} cells fitting only {}. No other cell in {} can be {}.",
-                        cell_list(&floor.iter().map(|&k| corners[k]).collect::<Vec<_>>()),
-                        digit_choice(pair),
-                        rc(a),
-                        rc(b),
-                        digit_choice(extras),
-                        digit_list(pair),
-                        digit_choice(extras),
-                        cell_list(&group),
-                        m + 1,
-                        digit_list(digits),
-                        house_name(house),
-                        digit_choice(digits),
-                    );
-                    let mut pattern =
-                        self.rectangle_pattern(corners, floor, pair, &[], 0, vec![house]);
-                    pattern.marks.extend(self.marks([a], extra_a, Role::Key));
-                    pattern.marks.extend(self.marks([b], extra_b, Role::Key));
-                    pattern
-                        .marks
-                        .extend(self.marks(group.iter().copied(), digits, Role::Key));
-                    pattern.cells.extend(&group);
+                            cell_list(&floor.iter().map(|&k| corners[k]).collect::<Vec<_>>()),
+                            digit_choice(pair),
+                            rc(a),
+                            rc(b),
+                            digit_choice(extras),
+                            digit_list(pair),
+                            digit_choice(extras),
+                            cell_list(&group),
+                            m + 1,
+                            digit_list(digits),
+                            house_name(house),
+                            digit_choice(digits),
+                        )
+                    });
+                    let pattern = self.pattern(|| {
+                        let mut pattern =
+                            self.rectangle_pattern(corners, floor, pair, &[], 0, vec![house]);
+                        pattern.marks.extend(self.marks([a], extra_a, Role::Key));
+                        pattern.marks.extend(self.marks([b], extra_b, Role::Key));
+                        pattern
+                            .marks
+                            .extend(self.marks(group.iter().copied(), digits, Role::Key));
+                        pattern.cells.extend(&group);
+                        pattern
+                    });
                     let removals = targets.into_iter().map(|c| (c, digits)).collect();
                     return self.eliminating(Technique::UniqueRectangle3, removals, pattern, why);
                 }
@@ -250,18 +261,21 @@ impl Grid {
                 .is_some_and(|(p, q)| (p, q) == (a, b) || (p, q) == (b, a))
         })?;
         let pair = 1 << x | 1 << y;
-        let why = format!(
-            "{} are only {}. In {}, {x} fits only in {} and {}, so one of them is {x}. \
+        let why = self.why(|| {
+            format!(
+                "{} are only {}. In {}, {x} fits only in {} and {}, so one of them is {x}. \
              If either were {y}, the four cells could swap {} for a second solution, \
              but the puzzle has just one (Unique Rectangle type 4). So neither is {y}.",
-            cell_list(&floor.iter().map(|&k| corners[k]).collect::<Vec<_>>()),
-            digit_choice(pair),
-            house_name(house),
-            rc(a),
-            rc(b),
-            digit_list(pair),
-        );
-        let pattern = self.rectangle_pattern(corners, floor, pair, roof, 1 << x, vec![house]);
+                cell_list(&floor.iter().map(|&k| corners[k]).collect::<Vec<_>>()),
+                digit_choice(pair),
+                house_name(house),
+                rc(a),
+                rc(b),
+                digit_list(pair),
+            )
+        });
+        let pattern = self
+            .pattern(|| self.rectangle_pattern(corners, floor, pair, roof, 1 << x, vec![house]));
         self.eliminating(
             Technique::UniqueRectangle4,
             vec![(a, 1 << y), (b, 1 << y)],
@@ -300,20 +314,22 @@ impl Grid {
                 (1..=N).all(|e| matches!(count[h][e] - u8::from(here && e == d), 0 | 2))
             })
         })?;
-        let why = format!(
-            "Every empty cell fits two digits, except {} with {}. If {} weren't {digit}, \
+        let why = self.why(|| {
+            format!(
+                "Every empty cell fits two digits, except {} with {}. If {} weren't {digit}, \
              each digit would fit exactly twice in every row, column and box left, \
              and such a puzzle has no solution or several. So {} is {digit}.",
-            rc(odd),
-            digit_list(self.cands[odd]),
-            rc(odd),
-            rc(odd),
-        );
-        let pattern = Pattern {
+                rc(odd),
+                digit_list(self.cands[odd]),
+                rc(odd),
+                rc(odd),
+            )
+        });
+        let pattern = self.pattern(|| Pattern {
             cells: vec![odd],
             marks: self.marks([odd], self.cands[odd], Role::Key),
             ..Pattern::default()
-        };
+        });
         Some(self.placing(Technique::BugPlusOne, odd, digit as u8, pattern, why))
     }
 }

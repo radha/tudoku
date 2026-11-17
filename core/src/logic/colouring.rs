@@ -136,20 +136,22 @@ impl Grid {
                     .map(|&b| (a, b))
             });
             let Some((a, b)) = clash else { continue };
-            let why = format!(
-                "Along these pairs, {digit} alternates: {} {} one colour and {} {} the other, \
+            let why = self.why(|| {
+                format!(
+                    "Along these pairs, {digit} alternates: {} {} one colour and {} {} the other, \
                  and one colour is all {digit}. {} and {} are one colour and see each other, \
                  so that colour can't be all {digit} (Simple Colouring wrap). \
                  The other colour is, and {} can't be {digit}.",
-                cell_list(&chain.colours[0]),
-                are(&chain.colours[0]),
-                cell_list(&chain.colours[1]),
-                are(&chain.colours[1]),
-                rc(a),
-                rc(b),
-                cell_list(cells),
-            );
-            let pattern = self.chain_pattern(digit, chain, &[(1 - k, Role::Key)]);
+                    cell_list(&chain.colours[0]),
+                    are(&chain.colours[0]),
+                    cell_list(&chain.colours[1]),
+                    are(&chain.colours[1]),
+                    rc(a),
+                    rc(b),
+                    cell_list(cells),
+                )
+            });
+            let pattern = self.pattern(|| self.chain_pattern(digit, chain, &[(1 - k, Role::Key)]));
             let removals = cells.iter().map(|&c| (c, bit)).collect();
             return self.eliminating(Technique::SimpleColouring, removals, pattern, why);
         }
@@ -174,28 +176,31 @@ impl Grid {
         if targets.is_empty() {
             return None;
         }
-        let why = format!(
-            "Along these pairs, {digit} alternates: {} {} one colour and {} {} the other, \
+        let why = self.why(|| {
+            format!(
+                "Along these pairs, {digit} alternates: {} {} one colour and {} {} the other, \
              and one colour is all {digit}. {} {} both colours, so {} {} either way \
              (Simple Colouring trap) and can't be {digit}.",
-            cell_list(&chain.colours[0]),
-            are(&chain.colours[0]),
-            cell_list(&chain.colours[1]),
-            are(&chain.colours[1]),
-            cell_list(&targets),
-            if targets.len() == 1 {
-                "sees"
-            } else {
-                "each see"
-            },
-            if targets.len() == 1 {
-                "it sees"
-            } else {
-                "they see"
-            },
-            a_digit(digit),
-        );
-        let pattern = self.chain_pattern(digit, chain, &[(0, Role::Key), (1, Role::Other)]);
+                cell_list(&chain.colours[0]),
+                are(&chain.colours[0]),
+                cell_list(&chain.colours[1]),
+                are(&chain.colours[1]),
+                cell_list(&targets),
+                if targets.len() == 1 {
+                    "sees"
+                } else {
+                    "each see"
+                },
+                if targets.len() == 1 {
+                    "it sees"
+                } else {
+                    "they see"
+                },
+                a_digit(digit),
+            )
+        });
+        let pattern =
+            self.pattern(|| self.chain_pattern(digit, chain, &[(0, Role::Key), (1, Role::Other)]));
         let removals = targets.into_iter().map(|c| (c, bit)).collect();
         self.eliminating(Technique::SimpleColouring, removals, pattern, why)
     }

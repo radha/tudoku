@@ -355,12 +355,25 @@ fn cells_in(mut set: Cells) -> impl Iterator<Item = usize> {
 pub struct Grid {
     values: Board,
     cands: [u16; CELLS],
+    /// Whether steps carry their picture and explanation. Grading only
+    /// wants the technique and the effect, so it turns this off and the
+    /// detectors skip building the rest.
+    explain: bool,
 }
 
 impl Grid {
     pub fn new(values: &Board) -> Grid {
-        let cands = std::array::from_fn(|i| candidates_mask(values, i));
-        Grid::with_candidates(values, &cands)
+        Grid {
+            values: *values,
+            cands: std::array::from_fn(|i| {
+                if values[i] == 0 {
+                    candidates_mask(values, i)
+                } else {
+                    0
+                }
+            }),
+            explain: true,
+        }
     }
 
     /// A board with the given candidates. Filled cells keep none, and no
@@ -376,6 +389,7 @@ impl Grid {
                     0
                 }
             }),
+            explain: true,
         }
     }
 
@@ -470,6 +484,20 @@ impl Grid {
             SueDeCoq => self.sue_de_coq(),
             DeathBlossom => self.death_blossom(),
         }
+    }
+
+    /// The picture of a step, built only when someone will look at it.
+    fn pattern(&self, build: impl FnOnce() -> Pattern) -> Pattern {
+        if self.explain {
+            build()
+        } else {
+            Pattern::default()
+        }
+    }
+
+    /// The explanation of a step, built only when someone will read it.
+    fn why(&self, build: impl FnOnce() -> String) -> String {
+        if self.explain { build() } else { String::new() }
     }
 
     /// A step removing each `(cell, mask)`, cut down to the candidates
@@ -569,6 +597,7 @@ pub fn grade(puzzle: &Board) -> Option<Grade> {
 
 fn grade_using(puzzle: &Board, techniques: &[Technique]) -> Option<Grade> {
     let mut grid = Grid::new(puzzle);
+    grid.explain = false;
     let mut grade = Grade {
         hardest: Technique::FullHouse,
         steps: 0,
@@ -596,6 +625,7 @@ pub(crate) mod testing {
         let mut grid = Grid {
             values: [1; CELLS],
             cands: [0; CELLS],
+            explain: true,
         };
         for &(cell, digits) in cands {
             grid.values[cell] = 0;
@@ -988,5 +1018,18 @@ mod tests {
     #[test]
     fn patterns_are_consistent() {
         dealt_states(|g, step, _| assert_consistent(g, step));
+    }
+
+    /// Grading skips the explanations but must find the same deductions.
+    #[test]
+    fn skipping_explanations_changes_nothing_else() {
+        dealt_states(|g, step, _| {
+            let mut quiet = g.clone();
+            quiet.explain = false;
+            let found = quiet.next_step().unwrap();
+            assert_eq!(found.technique, step.technique);
+            assert_eq!(found.effect, step.effect);
+            assert!(found.why.is_empty());
+        });
     }
 }

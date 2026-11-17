@@ -26,17 +26,19 @@ impl Grid {
                 continue;
             }
             let digit = missing.trailing_zeros() as u8;
-            let pattern = Pattern {
+            let pattern = self.pattern(|| Pattern {
                 digit: Some(digit),
                 houses: vec![h],
                 ..Pattern::default()
-            };
-            let why = format!(
-                "{} is the last empty cell in {}, so it's {}.",
-                rc(cell),
-                house_name(h),
-                a_digit(digit),
-            );
+            });
+            let why = self.why(|| {
+                format!(
+                    "{} is the last empty cell in {}, so it's {}.",
+                    rc(cell),
+                    house_name(h),
+                    a_digit(digit),
+                )
+            });
             return Some(self.placing(Technique::FullHouse, cell, digit, pattern, why));
         }
         None
@@ -46,11 +48,11 @@ impl Grid {
     pub(super) fn naked_single(&self) -> Option<Step> {
         let cell = (0..CELLS).find(|&i| self.cands[i].count_ones() == 1)?;
         let digit = self.cands[cell].trailing_zeros() as u8;
-        let pattern = Pattern {
+        let pattern = self.pattern(|| Pattern {
             cells: vec![cell],
             ..Pattern::default()
-        };
-        let why = format!("{} has only one candidate left: {digit}.", rc(cell));
+        });
+        let why = self.why(|| format!("{} has only one candidate left: {digit}.", rc(cell)));
         Some(self.placing(Technique::NakedSingle, cell, digit, pattern, why))
     }
 
@@ -67,13 +69,14 @@ impl Grid {
                     .iter()
                     .map(|&c| usize::from(c))
                     .filter(|&c| c != cell && self.values[c] == 0);
-                let pattern = Pattern {
+                let pattern = self.pattern(|| Pattern {
                     digit: Some(digit),
                     houses: vec![h],
                     placed: self.ruling_out(digit, others.collect()),
                     ..Pattern::default()
-                };
-                let why = format!("In {}, {digit} fits only in {}.", house_name(h), rc(cell));
+                });
+                let why = self
+                    .why(|| format!("In {}, {digit} fits only in {}.", house_name(h), rc(cell)));
                 return Some(self.placing(Technique::HiddenSingle, cell, digit, pattern, why));
             }
         }
@@ -116,26 +119,36 @@ impl Grid {
     fn locked(&self, h: usize, technique: Technique) -> Option<Step> {
         for digit in 1..=9u8 {
             let bit = 1 << digit;
-            let cells: Vec<usize> = bits(self.positions(&HOUSES[h], bit))
-                .map(|p| usize::from(HOUSES[h][p]))
-                .collect();
-            if cells.len() < 2 {
+            let pos = self.positions(&HOUSES[h], bit);
+            if pos.count_ones() < 2 {
                 continue;
             }
+            let mut spots = [0; N];
+            let mut n = 0;
+            for p in bits(pos) {
+                spots[n] = usize::from(HOUSES[h][p]);
+                n += 1;
+            }
+            let cells = &spots[..n];
             let same = |f: fn(usize) -> usize| cells.iter().all(|&c| f(c) == f(cells[0]));
             // The other houses all of these cells share.
-            let mut targets = Vec::new();
+            let mut shared = [0; 2];
+            let mut count = 0;
             if h >= 2 * N {
                 if same(row_of) {
-                    targets.push(row_of(cells[0]));
+                    shared[count] = row_of(cells[0]);
+                    count += 1;
                 }
                 if same(col_of) {
-                    targets.push(N + col_of(cells[0]));
+                    shared[count] = N + col_of(cells[0]);
+                    count += 1;
                 }
             } else if same(box_of_cell) {
-                targets.push(2 * N + box_of_cell(cells[0]));
+                shared[count] = 2 * N + box_of_cell(cells[0]);
+                count += 1;
             }
-            for t in targets {
+            let targets = &shared[..count];
+            for &t in targets {
                 let removals: Vec<(usize, u16)> = HOUSES[t]
                     .iter()
                     .map(|&c| usize::from(c))
@@ -145,18 +158,20 @@ impl Grid {
                 if removals.is_empty() {
                     continue;
                 }
-                let pattern = Pattern {
+                let pattern = self.pattern(|| Pattern {
                     digit: Some(digit),
                     houses: vec![h, t],
                     marks: self.marks(cells.iter().copied(), bit, Role::Key),
                     ..Pattern::default()
-                };
-                let why = format!(
-                    "In {}, every {digit} is in {}, so the rest of {} can't be {digit}.",
-                    house_name(h),
-                    house_name(t),
-                    house_name(t)
-                );
+                });
+                let why = self.why(|| {
+                    format!(
+                        "In {}, every {digit} is in {}, so the rest of {} can't be {digit}.",
+                        house_name(h),
+                        house_name(t),
+                        house_name(t)
+                    )
+                });
                 if let Some(step) = self.eliminating(technique, removals, pattern, why) {
                     return Some(step);
                 }
@@ -186,19 +201,21 @@ impl Grid {
                     continue;
                 }
                 let cells: Vec<usize> = bits(set).map(cell).collect();
-                let why = format!(
-                    "{} hold only {} between them, so nothing else in {} can be {}.",
-                    cell_list(&cells),
-                    digit_list(union),
-                    house_name(h),
-                    digit_choice(union)
-                );
-                let pattern = Pattern {
+                let why = self.why(|| {
+                    format!(
+                        "{} hold only {} between them, so nothing else in {} can be {}.",
+                        cell_list(&cells),
+                        digit_list(union),
+                        house_name(h),
+                        digit_choice(union)
+                    )
+                });
+                let pattern = self.pattern(|| Pattern {
                     marks: self.marks(cells.iter().copied(), union, Role::Key),
                     cells,
                     houses: vec![h],
                     ..Pattern::default()
-                };
+                });
                 if let Some(step) = self.eliminating(technique, removals, pattern, why) {
                     return Some(step);
                 }
@@ -231,18 +248,20 @@ impl Grid {
                     continue;
                 }
                 let removals = cells.iter().map(|&c| (c, !digits)).collect();
-                let why = format!(
-                    "In {}, {} fit only in {}, so those cells can't hold anything else.",
-                    house_name(h),
-                    digit_list(digits),
-                    cell_list(&cells)
-                );
-                let pattern = Pattern {
+                let why = self.why(|| {
+                    format!(
+                        "In {}, {} fit only in {}, so those cells can't hold anything else.",
+                        house_name(h),
+                        digit_list(digits),
+                        cell_list(&cells)
+                    )
+                });
+                let pattern = self.pattern(|| Pattern {
                     marks: self.marks(cells.iter().copied(), digits, Role::Key),
                     cells,
                     houses: vec![h],
                     ..Pattern::default()
-                };
+                });
                 if let Some(step) = self.eliminating(technique, removals, pattern, why) {
                     return Some(step);
                 }

@@ -260,45 +260,218 @@ pub fn full_solution<R: Rng>(rng: &mut R) -> Board {
     solver.board
 }
 
+/// Solvability by constraint propagation, for [`dig`]'s many yes/no
+/// questions: forced cells are filled in a tight loop touching only a
+/// placement's 20 peers, and a cell or house left with no place for a
+/// digit ends a branch at once. It only says whether a solution exists,
+/// not what it is.
+mod propagate {
+    use super::{ALL_DIGITS, CELLS, HOUSE_OF, HOUSES, N, PEERS};
+
+    /// What is still possible: the candidates of every open cell (`0` for
+    /// a filled one, so an open cell always has a bit set while the grid
+    /// is consistent) and the digits each house already holds.
+    #[derive(Clone, Copy)]
+    pub struct State {
+        pub cands: [u16; CELLS],
+        done: [u16; 3 * N],
+    }
+
+    impl State {
+        pub fn new(cands: [u16; CELLS], board: &[u8; CELLS]) -> State {
+            let mut done = [0; 3 * N];
+            for (i, &v) in board.iter().enumerate() {
+                let [r, c, b] = HOUSE_OF[i].map(usize::from);
+                for h in [r, N + c, 2 * N + b] {
+                    done[h] |= 1 << v;
+                }
+            }
+            State { cands, done }
+        }
+    }
+
+    /// Cells holding a single candidate, whose digit is therefore forced.
+    /// A cell is queued when it starts there or gets there, so at most
+    /// twice.
+    pub struct Queue {
+        cells: [u8; 2 * CELLS],
+        len: usize,
+    }
+
+    impl Queue {
+        pub fn new() -> Queue {
+            Queue {
+                cells: [0; 2 * CELLS],
+                len: 0,
+            }
+        }
+
+        fn push(&mut self, i: usize) {
+            self.cells[self.len] = i as u8;
+            self.len += 1;
+        }
+    }
+
+    /// Fill cell `i` with `v`, striking `v` from its peers. False when a
+    /// peer is left with nothing.
+    pub fn assign(s: &mut State, queue: &mut Queue, i: usize, v: u8) -> bool {
+        let bit = 1u16 << v;
+        s.cands[i] = 0;
+        let [r, c, b] = HOUSE_OF[i].map(usize::from);
+        for h in [r, N + c, 2 * N + b] {
+            s.done[h] |= bit;
+        }
+        for &p in &PEERS[i] {
+            let p = usize::from(p);
+            if s.cands[p] & bit != 0 {
+                let left = s.cands[p] & !bit;
+                if left == 0 {
+                    return false;
+                }
+                s.cands[p] = left;
+                if left & (left - 1) == 0 {
+                    queue.push(p);
+                }
+            }
+        }
+        true
+    }
+
+    /// Fill every forced cell, and those that force. False on a dead end.
+    pub fn run(s: &mut State, queue: &mut Queue) -> bool {
+        while queue.len > 0 {
+            queue.len -= 1;
+            let i = usize::from(queue.cells[queue.len]);
+            let m = s.cands[i];
+            if m != 0 && m & (m - 1) == 0 && !assign(s, queue, i, m.trailing_zeros() as u8) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Fill every cell that is forced, by having a single candidate or by
+    /// being the one place left for a digit in a house, wherever it is.
+    /// False on a dead end: a cell, or a house's digit, with nowhere to go.
+    pub fn settle(s: &mut State) -> bool {
+        let mut queue = Queue::new();
+        for (i, &m) in s.cands.iter().enumerate() {
+            if m != 0 && m & (m - 1) == 0 {
+                queue.push(i);
+            }
+        }
+        loop {
+            if !run(s, &mut queue) {
+                return false;
+            }
+            let mut changed = false;
+            for (h, house) in HOUSES.iter().enumerate() {
+                let (mut once, mut twice) = (0u16, 0u16);
+                for &c in house {
+                    let m = s.cands[usize::from(c)];
+                    twice |= once & m;
+                    once |= m;
+                }
+                let open = ALL_DIGITS & !s.done[h];
+                if open & !once != 0 {
+                    return false;
+                }
+                let mut hidden = once & !twice;
+                while hidden != 0 {
+                    let v = hidden.trailing_zeros() as u8;
+                    hidden &= hidden - 1;
+                    let bit = 1 << v;
+                    if let Some(&c) = house.iter().find(|&&c| s.cands[usize::from(c)] & bit != 0)
+                        && !assign(s, &mut queue, usize::from(c), v)
+                    {
+                        return false;
+                    }
+                    changed = true;
+                }
+                if queue.len > 0 {
+                    break;
+                }
+            }
+            if !changed && queue.len == 0 {
+                return true;
+            }
+        }
+    }
+
+    /// True when the grid, already settled, can be completed.
+    pub fn solvable(s: &State) -> bool {
+        // Branch on the open cell with the fewest candidates.
+        let mut best: Option<(usize, u32)> = None;
+        for (i, &m) in s.cands.iter().enumerate() {
+            if m != 0 {
+                let n = m.count_ones();
+                if best.is_none_or(|(_, b)| n < b) {
+                    best = Some((i, n));
+                }
+            }
+        }
+        let Some((cell, _)) = best else {
+            return true;
+        };
+        let mask = s.cands[cell];
+        (1..=9u8).filter(|v| mask & (1 << v) != 0).any(|v| {
+            let mut next = *s;
+            let mut queue = Queue::new();
+            assign(&mut next, &mut queue, cell, v)
+                && run(&mut next, &mut queue)
+                && settle(&mut next)
+                && solvable(&next)
+        })
+    }
+}
+
 /// Blank cells of `solved` in random order while the puzzle keeps a unique
 /// solution, stopping once `target` cells are empty.
 ///
 /// One pass is all it takes: blanking more cells never makes a puzzle more
 /// constrained, so a cell that can't be removed now can't be removed later.
 pub fn dig<R: Rng>(solved: &Board, target: usize, rng: &mut R) -> Board {
-    let mut puzzle = *solved;
-    let mut order: Vec<usize> = (0..CELLS).collect();
+    let mut solver = Solver::new(solved);
+    let mut order: [usize; CELLS] = std::array::from_fn(|i| i);
     order.shuffle(rng);
     let mut holes = 0;
     for i in order {
         if holes >= target {
             break;
         }
-        let backup = puzzle[i];
-        puzzle[i] = 0;
+        let backup = solver.board[i];
+        solver.lift(i);
         // The puzzle's one solution is `solved`, so a second solution
         // would have to put another digit here.
-        if only_digit_fits(&puzzle, i, backup) {
+        if only_digit_fits(&solver, i, backup) {
             holes += 1;
         } else {
-            puzzle[i] = backup;
+            solver.place(i, backup);
         }
     }
-    puzzle
+    solver.board
 }
 
-/// True when no digit but `digit` in empty cell `cell` leaves `puzzle`
+/// True when no digit but `digit` in empty cell `cell` leaves the puzzle
 /// solvable.
-fn only_digit_fits(puzzle: &Board, cell: usize, digit: u8) -> bool {
-    let mut solver = Solver::new(puzzle);
-    let others = solver.candidates(cell) & !(1 << digit);
-    (1..=9u8).filter(|v| others & (1 << v) != 0).all(|v| {
-        solver.place(cell, v);
-        if solver.solve() {
-            return false;
+fn only_digit_fits(puzzle: &Solver, cell: usize, digit: u8) -> bool {
+    let cands = std::array::from_fn(|i| {
+        if puzzle.board[i] == 0 {
+            puzzle.candidates(i)
+        } else {
+            0
         }
-        solver.lift(cell);
-        true
+    });
+    let state = propagate::State::new(cands, &puzzle.board);
+    // Digits the givens have not ruled out, apart from `digit`.
+    let others = state.cands[cell] & !(1 << digit);
+    (1..=9u8).filter(|v| others & (1 << v) != 0).all(|v| {
+        let mut next = state;
+        let mut queue = propagate::Queue::new();
+        !(propagate::assign(&mut next, &mut queue, cell, v)
+            && propagate::run(&mut next, &mut queue)
+            && propagate::settle(&mut next)
+            && propagate::solvable(&next))
     })
 }
 
@@ -345,8 +518,8 @@ pub fn test_board() -> (Board, Board) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::SeedableRng;
     use rand::rngs::StdRng;
+    use rand::{RngExt, SeedableRng};
 
     #[test]
     fn peer_and_house_tables_are_right() {
@@ -399,6 +572,47 @@ mod tests {
                 !is_unique(&fewer),
                 "digging to CELLS leaves no removable clue"
             );
+        }
+    }
+
+    /// The plain definition of [`dig`]: same shuffle, blank a cell, keep
+    /// the hole when the whole puzzle is still unique.
+    fn dig_by_definition<R: Rng>(solved: &Board, target: usize, rng: &mut R) -> Board {
+        let mut puzzle = *solved;
+        let mut order: Vec<usize> = (0..CELLS).collect();
+        order.shuffle(rng);
+        let mut holes = 0;
+        for i in order {
+            if holes >= target {
+                break;
+            }
+            let backup = puzzle[i];
+            puzzle[i] = 0;
+            if is_unique(&puzzle) {
+                holes += 1;
+            } else {
+                puzzle[i] = backup;
+            }
+        }
+        puzzle
+    }
+
+    #[test]
+    fn dig_matches_its_definition() {
+        for seed in 0..6 {
+            for target in [30, 50, CELLS] {
+                let mut a = StdRng::seed_from_u64(seed);
+                let mut b = StdRng::seed_from_u64(seed);
+                let solved = full_solution(&mut a);
+                assert_eq!(solved, full_solution(&mut b));
+                assert_eq!(
+                    dig(&solved, target, &mut a),
+                    dig_by_definition(&solved, target, &mut b),
+                    "seed {seed}, target {target}"
+                );
+                // Both leave the generator in the same place.
+                assert_eq!(a.random::<u64>(), b.random::<u64>());
+            }
         }
     }
 

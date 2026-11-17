@@ -353,28 +353,30 @@ impl Grid {
                 pair.trailing_zeros() as u8,
                 (15 - pair.leading_zeros()) as u8,
             );
-            let why = format!(
-                "{} fit only {}, and any two that see each other differ. So {} {} one digit \
+            let why = self.why(|| {
+                format!(
+                    "{} fit only {}, and any two that see each other differ. So {} {} one digit \
                  and {} {} the other. {} {} one of each, so {} both {lo} and {hi} and \
                  can't be either.",
-                cell_list(&cells),
-                digit_list(pair),
-                cell_list(&sides[0]),
-                are(&sides[0]),
-                cell_list(&sides[1]),
-                are(&sides[1]),
-                cell_list(&targets),
-                if targets.len() == 1 {
-                    "sees"
-                } else {
-                    "each see"
-                },
-                if targets.len() == 1 {
-                    "it sees"
-                } else {
-                    "they see"
-                },
-            );
+                    cell_list(&cells),
+                    digit_list(pair),
+                    cell_list(&sides[0]),
+                    are(&sides[0]),
+                    cell_list(&sides[1]),
+                    are(&sides[1]),
+                    cell_list(&targets),
+                    if targets.len() == 1 {
+                        "sees"
+                    } else {
+                        "each see"
+                    },
+                    if targets.len() == 1 {
+                        "it sees"
+                    } else {
+                        "they see"
+                    },
+                )
+            });
             let mut marks = self.marks(sides[0].iter().copied(), pair, Role::Key);
             marks.extend(self.marks(sides[1].iter().copied(), pair, Role::Other));
             // Follow one digit out of each cell: the one its colour would
@@ -390,12 +392,12 @@ impl Grid {
                     }
                 })
                 .collect();
-            let pattern = Pattern {
+            let pattern = self.pattern(|| Pattern {
                 cells,
                 marks,
                 links,
                 ..Pattern::default()
-            };
+            });
             let removals = targets.iter().map(|&t| (t, pair)).collect();
             if let Some(step) = self.eliminating(Technique::RemotePair, removals, pattern, why) {
                 return Some(step);
@@ -452,18 +454,20 @@ impl Grid {
                 }
             }
         }
-        let why = format!(
-            "{} {}",
-            walk(&pairs, one_digit),
-            conclusion(first, last, &removals)
-        );
-        let pattern = Pattern {
+        let why = self.why(|| {
+            format!(
+                "{} {}",
+                walk(&pairs, one_digit),
+                conclusion(first, last, &removals)
+            )
+        });
+        let pattern = self.pattern(|| Pattern {
             digit: one_digit.then_some(first.1),
             cells,
             marks,
             links,
             ..Pattern::default()
-        };
+        });
         self.eliminating(technique, removals, pattern, why)
     }
 }
