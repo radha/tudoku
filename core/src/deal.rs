@@ -4,10 +4,6 @@
 //! by the human-style solver in `logic`. Every puzzle has exactly one
 //! solution and can be finished by logic alone — no guessing, ever.
 
-use std::num::NonZero;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
-
 use rand::Rng;
 
 use crate::logic::{self, Grade, Technique};
@@ -153,36 +149,6 @@ pub fn deal<R: Rng>(level: Difficulty, rng: &mut R) -> Deal {
     }
 }
 
-/// [`deal`] on every core at once; the first worker to succeed wins. The
-/// rarest level (Master) needs ~15 attempts of ~0.8ms each on average.
-/// The others finish their attempts before this returns, a millisecond
-/// or two, so a worker that panics takes the deal down with it, where the
-/// caller sees it, rather than printing over the game later.
-pub fn deal_fast(level: Difficulty) -> Deal {
-    let workers = std::thread::available_parallelism().map_or(1, NonZero::get);
-    let done = AtomicBool::new(false);
-    let found = Mutex::new(None);
-    std::thread::scope(|s| {
-        for _ in 0..workers {
-            s.spawn(|| {
-                let mut rng = rand::rng();
-                while !done.load(Ordering::Relaxed) {
-                    if let Some(deal) = try_deal(level, &mut rng) {
-                        if !done.swap(true, Ordering::Relaxed) {
-                            *found.lock().unwrap_or_else(|e| e.into_inner()) = Some(deal);
-                        }
-                        return;
-                    }
-                }
-            });
-        }
-    });
-    found
-        .into_inner()
-        .unwrap_or_else(|e| e.into_inner())
-        .expect("the first worker to succeed stores its deal")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -280,12 +246,5 @@ mod tests {
         let easy = deal(Difficulty::Easy, &mut rng).givens();
         assert!(easy <= 31);
         assert!(deal(Difficulty::Medium, &mut rng).givens() < easy);
-    }
-
-    #[test]
-    fn fast_dealing_matches_the_level() {
-        let d = deal_fast(Difficulty::Medium);
-        assert!(Difficulty::Medium.accepts(d.grade.hardest));
-        assert!(sudoku::is_unique(&d.puzzle));
     }
 }

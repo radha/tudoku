@@ -33,8 +33,8 @@ hardest one the puzzle needs:
 
 Every puzzle has exactly one solution (cells are removed from a random
 complete grid only while a solver confirms uniqueness) and can be finished
-by logic alone — never by guessing. Puzzles are dealt on all CPU cores in
-the background; every level typically takes well under a second.
+by logic alone — never by guessing. Puzzles are dealt on a background
+thread; every level typically takes a few milliseconds.
 
 ## Saves and best times
 

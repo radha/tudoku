@@ -8,7 +8,7 @@ members = ["core"]
 
 [dependencies]
 tudoku-core = { path = "core" }
-ratatui = { version = "0.30", features = ["crossterm"] }
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 crossterm = "0.29"
 rand = "0.10.4"
 
@@ -18,3 +18,9 @@ tempfile = "3.27.0"
 
 [target."cfg(unix)".dependencies]
 signal-hook = "0.4.6"
+libc = "0.2.191"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true

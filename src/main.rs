@@ -9,7 +9,7 @@ mod ui;
 
 use tudoku_core::{deal, game, library, logic, store, sudoku, tutor};
 
-use std::io::{self, IsTerminal, Stdout};
+use std::io::{self, BufWriter, IsTerminal, StdoutLock};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -18,10 +18,11 @@ use std::time::{Duration, Instant};
 use crossterm::{
     cursor,
     event::{
-        self, DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture,
-        Event, KeyEventKind, MouseButton, MouseEventKind,
+        self, DisableFocusChange, EnableFocusChange, Event, KeyEventKind, MouseButton,
+        MouseEventKind,
     },
     execute,
+    style::Print,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
@@ -31,6 +32,12 @@ use crate::deal::Difficulty;
 use crate::game::Game;
 use crate::logic::Technique;
 use crate::store::Store;
+
+/// Ask for button events only, in SGR form. crossterm's `EnableMouseCapture`
+/// also turns on any-motion tracking (`?1002h ?1003h`), which sends an event
+/// for every cell the pointer crosses; the app only uses left-button presses.
+const MOUSE_ON: &str = "\x1b[?1000h\x1b[?1006h";
+const MOUSE_OFF: &str = "\x1b[?1006l\x1b[?1000l";
 
 /// Raw mode, alternate screen and mouse capture for as long as it lives.
 /// Dropping it restores the terminal, so an early `?` return can't leave
@@ -44,7 +51,7 @@ impl TerminalGuard {
         execute!(
             io::stdout(),
             EnterAlternateScreen,
-            EnableMouseCapture,
+            Print(MOUSE_ON),
             EnableFocusChange
         )?;
         Ok(guard)
@@ -68,7 +75,7 @@ fn restore_terminal() {
     let _ = execute!(
         io::stdout(),
         DisableFocusChange,
-        DisableMouseCapture,
+        Print(MOUSE_OFF),
         LeaveAlternateScreen,
         cursor::Show
     );
@@ -120,8 +127,29 @@ fn exit_if_terminal_vanishes() {
         return; // input comes from /dev/tty some other way; nothing to watch
     }
     thread::spawn(|| {
+        #[cfg(unix)]
+        {
+            // poll() with no events asked for and no timeout returns only
+            // for POLLHUP/POLLERR/POLLNVAL: when the terminal goes away.
+            // No wakeups until then.
+            let mut fd = libc::pollfd {
+                fd: libc::STDIN_FILENO,
+                events: 0,
+                revents: 0,
+            };
+            loop {
+                // SAFETY: `fd` is a valid pollfd and we pass a count of 1.
+                let r = unsafe { libc::poll(&mut fd, 1, -1) };
+                if r > 0 {
+                    std::process::exit(0);
+                }
+                if r < 0 && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
+                    break; // poll itself failed: fall back to sleeping
+                }
+            }
+        }
         loop {
-            thread::sleep(Duration::from_millis(500));
+            thread::sleep(Duration::from_secs(5));
             if !io::stdin().is_terminal() {
                 std::process::exit(0);
             }
@@ -134,7 +162,10 @@ fn run() -> io::Result<()> {
     let stop = stop_on_signals()?;
     let _guard = TerminalGuard::enter()?;
     exit_if_terminal_vanishes();
-    let mut term = Terminal::new(CrosstermBackend::new(io::stdout()))?;
+    let mut term = Terminal::new(CrosstermBackend::new(BufWriter::with_capacity(
+        8 * 1024,
+        io::stdout().lock(),
+    )))?;
     let mut app = App::new(Store::open_default());
     // However the loop ends (q, a signal, a dead terminal), keep the game.
     // A failed final save is reported once the screen is restored.
@@ -158,15 +189,16 @@ fn retry_interrupted<T>(r: io::Result<T>) -> io::Result<Option<T>> {
 }
 
 fn event_loop(
-    term: &mut Terminal<CrosstermBackend<Stdout>>,
+    term: &mut Terminal<CrosstermBackend<BufWriter<StdoutLock<'static>>>>,
     app: &mut App,
     stop: &AtomicBool,
 ) -> io::Result<()> {
     let mut hits = Vec::new();
-    // Redraw after anything that can change the screen, and every tick for
-    // the clock, but not for every report of the mouse moving.
+    // Redraw after anything that can change the screen, and when something
+    // that depends on time changes what's showing (the clock's whole
+    // second, a header message expiring), not on a fixed tick.
     let mut dirty = true;
-    let mut drawn = Instant::now();
+    let mut shown = Shown::default();
 
     while !stop.load(Ordering::Relaxed) {
         app.autosave();
@@ -175,7 +207,7 @@ fn event_loop(
             // milliseconds, so the board is simply the next thing drawn.
             // On a thread of its own so a panicking worker can't take the
             // game down with it.
-            let dealt = match thread::spawn(move || deal::deal_fast(level)).join() {
+            let dealt = match thread::spawn(move || deal::deal(level, &mut rand::rng())).join() {
                 Ok(d) => d,
                 // A worker panicked: deal here instead, and repaint over
                 // the panic message it printed.
@@ -188,28 +220,23 @@ fn event_loop(
             dirty = true;
         }
 
-        // Poll so the timer refreshes on its own.
-        let tick = Duration::from_millis(250);
-        if dirty || drawn.elapsed() >= tick {
-            let size = term.size()?;
-            app.set_fits(size.width >= ui::MIN_W && size.height >= ui::MIN_H);
-            term.draw(|f| hits = ui::render(f, app))?;
-            drawn = Instant::now();
+        if dirty || Shown::of(app) != shown {
+            term.draw(|f| {
+                // One size query per frame: the one `draw` already made.
+                let area = f.area();
+                app.set_fits(area.width >= ui::MIN_W && area.height >= ui::MIN_H);
+                hits = ui::render(f, app);
+            })?;
+            shown = Shown::of(app);
             dirty = false;
         }
 
-        if retry_interrupted(event::poll(tick))? != Some(true) {
+        if retry_interrupted(event::poll(next_wake(app)))? != Some(true) {
             continue;
         }
         let Some(event) = retry_interrupted(event::read())? else {
             continue;
         };
-        if let Event::Mouse(m) = event
-            && m.kind != MouseEventKind::Down(MouseButton::Left)
-        {
-            continue;
-        }
-        dirty = true;
         let action = match event {
             Event::Key(key) if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) => {
                 app.key_action(key.code, key.modifiers)
@@ -219,25 +246,82 @@ fn event_loop(
             }
             Event::FocusLost => {
                 app.set_focus(false);
+                dirty = true;
                 None
             }
             Event::FocusGained => {
                 app.set_focus(true);
+                dirty = true;
+                None
+            }
+            Event::Resize(..) => {
+                dirty = true;
                 None
             }
             _ => None,
         };
-        if let Some(action) = action
-            && app.apply(action)
-        {
-            return Ok(());
+        if let Some(action) = action {
+            dirty = true;
+            if app.apply(action) {
+                return Ok(());
+            }
         }
     }
     Ok(())
 }
 
-/// Deal five puzzles per level, unseeded and on every core as the game
-/// does (`deal_fast`), and check each one, proving the generator works
+/// How long a header message stays up; mirrors the TTL in `ui::header_lines`.
+const MESSAGE_TTL: Duration = Duration::from_secs(4);
+
+/// The longest the loop sleeps: the stop flag (set by a signal) is only
+/// looked at when `poll` returns, and the autosave wants a look-in.
+const MAX_WAIT: Duration = Duration::from_secs(1);
+
+/// The time-dependent parts of the screen as last drawn.
+#[derive(Default, PartialEq)]
+struct Shown {
+    /// Whole seconds on a running clock.
+    secs: Option<u64>,
+    /// Whether a header message was up.
+    message: bool,
+}
+
+impl Shown {
+    fn of(app: &App) -> Self {
+        let Some(g) = &app.game else {
+            return Shown::default();
+        };
+        Shown {
+            secs: running(g).then(|| g.elapsed().as_secs()),
+            message: g.message(MESSAGE_TTL).is_some(),
+        }
+    }
+}
+
+fn running(g: &Game) -> bool {
+    !g.paused && !g.completed
+}
+
+/// Poll timeout: until the next thing on screen is due to change, at most
+/// [`MAX_WAIT`].
+fn next_wake(app: &App) -> Duration {
+    let mut wait = MAX_WAIT;
+    if let Some(g) = &app.game {
+        if running(g) {
+            let into = Duration::from_nanos(u64::from(g.elapsed().subsec_nanos()));
+            wait = wait.min(Duration::from_secs(1) - into + Duration::from_millis(1));
+        }
+        if g.message(MESSAGE_TTL).is_some()
+            && let Some((_, at)) = &g.status
+        {
+            wait = wait.min(MESSAGE_TTL.saturating_sub(at.elapsed()) + Duration::from_millis(1));
+        }
+    }
+    wait
+}
+
+/// Deal five puzzles per level, unseeded and as the game does
+/// (`deal`), and check each one, proving the generator works
 /// without any I/O or network. Reports what the last puzzle per level
 /// actually is, not what the level promises, and the median deal time.
 fn offline_check() {
@@ -247,7 +331,7 @@ fn offline_check() {
         let mut last = None;
         for _ in 0..DEALS {
             let started = Instant::now();
-            let d = deal::deal_fast(level);
+            let d = deal::deal(level, &mut rand::rng());
             times.push(started.elapsed());
             assert!(sudoku::is_valid_solution(&d.solution), "{level:?}");
             assert!(sudoku::is_unique(&d.puzzle), "{level:?}");
