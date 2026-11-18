@@ -96,10 +96,12 @@ fn install_panic_hook() {
     }));
 }
 
-/// SIGTERM, SIGINT (e.g. `kill`) or SIGHUP (the window closed) asks the
-/// event loop to stop, so the game is saved, with its clock, and the
-/// terminal restored on the way out. A second signal before that's done
-/// (the loop is stuck, say) exits at once.
+/// SIGTERM, SIGINT or SIGHUP (e.g. from `kill`) asks the event loop to
+/// stop, so the game is saved, with its clock, and the terminal restored on
+/// the way out. A second signal before that's done (the loop is stuck, say)
+/// exits at once. Closing the window doesn't get this far: its SIGHUP comes
+/// with a hang-up that has crossterm spinning before the flag is looked at,
+/// and `exit_if_terminal_vanishes` ends the game instead.
 #[cfg(unix)]
 fn stop_on_signals() -> io::Result<Arc<AtomicBool>> {
     use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
@@ -122,7 +124,11 @@ fn stop_on_signals() -> io::Result<Arc<AtomicBool>> {
 /// end-of-file and the main thread never gets control back, not even to see
 /// the stop flag the hang-up's SIGHUP sets. Watch for that from the side and
 /// exit; every edit has already been saved, so at most the last 30 s of
-/// clock and selection are lost.
+/// clock and selection are lost. This is crossterm's issue 793
+/// (<https://github.com/crossterm-rs/crossterm/issues/793>): once a release
+/// returns an error on end-of-file instead (its PR 1067), the event loop
+/// ends on its own and saves the clock too, and this watcher and both
+/// `wait_for_hangup`s can go.
 fn exit_if_terminal_vanishes() {
     if !io::stdin().is_terminal() {
         return; // input comes from /dev/tty some other way; nothing to watch
