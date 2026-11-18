@@ -118,10 +118,11 @@ fn stop_on_signals() -> io::Result<Arc<AtomicBool>> {
     Ok(Arc::new(AtomicBool::new(false)))
 }
 
-/// If the terminal goes away and no SIGHUP reaches us, crossterm's input
-/// loop spins forever on end-of-file and the main thread never gets
-/// control back. Watch for that from the side and exit; every edit has
-/// already been saved, so at most the last 30 s of clock and selection are lost.
+/// If the terminal goes away, crossterm's input loop spins forever on
+/// end-of-file and the main thread never gets control back, not even to see
+/// the stop flag the hang-up's SIGHUP sets. Watch for that from the side and
+/// exit; every edit has already been saved, so at most the last 30 s of
+/// clock and selection are lost.
 fn exit_if_terminal_vanishes() {
     if !io::stdin().is_terminal() {
         return; // input comes from /dev/tty some other way; nothing to watch
@@ -129,24 +130,10 @@ fn exit_if_terminal_vanishes() {
     thread::spawn(|| {
         #[cfg(unix)]
         {
-            // poll() with no events asked for and no timeout returns only
-            // for POLLHUP/POLLERR/POLLNVAL: when the terminal goes away.
-            // No wakeups until then.
-            let mut fd = libc::pollfd {
-                fd: libc::STDIN_FILENO,
-                events: 0,
-                revents: 0,
-            };
-            loop {
-                // SAFETY: `fd` is a valid pollfd and we pass a count of 1.
-                let r = unsafe { libc::poll(&mut fd, 1, -1) };
-                if r > 0 {
-                    std::process::exit(0);
-                }
-                if r < 0 && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
-                    break; // poll itself failed: fall back to sleeping
-                }
+            if wait_for_hangup().is_ok() {
+                std::process::exit(0);
             }
+            // Waiting itself failed: fall back to sleeping.
         }
         loop {
             thread::sleep(Duration::from_secs(5));
@@ -155,6 +142,78 @@ fn exit_if_terminal_vanishes() {
             }
         }
     });
+}
+
+/// Block until the terminal on stdin hangs up, with no wakeups before then.
+/// poll() with no events asked for and no timeout returns only for
+/// POLLHUP/POLLERR/POLLNVAL: when the terminal goes away.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn wait_for_hangup() -> io::Result<()> {
+    let mut fd = libc::pollfd {
+        fd: libc::STDIN_FILENO,
+        events: 0,
+        revents: 0,
+    };
+    loop {
+        // SAFETY: `fd` is a valid pollfd and we pass a count of 1.
+        let r = unsafe { libc::poll(&mut fd, 1, -1) };
+        if r > 0 {
+            return Ok(());
+        }
+        if r < 0 {
+            let e = io::Error::last_os_error();
+            if e.kind() != io::ErrorKind::Interrupted {
+                return Err(e);
+            }
+        }
+    }
+}
+
+/// macOS builds poll() on kqueue and gives a pollfd with no events nothing
+/// to wait on, so the poll() above would sleep through the hang-up; and
+/// isatty() stays true after it, so the fallback can't see it either. Ask
+/// kqueue directly: its read filter flags EV_EOF when the terminal hangs up.
+/// Edge-triggered (EV_CLEAR), it wakes once per burst of input, which the
+/// main thread is awake for anyway, rather than until that input is read.
+#[cfg(target_os = "macos")]
+fn wait_for_hangup() -> io::Result<()> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::ptr;
+
+    // SAFETY: no arguments; the descriptor it returns is ours alone.
+    let kq = match unsafe { libc::kqueue() } {
+        -1 => return Err(io::Error::last_os_error()),
+        fd => unsafe { OwnedFd::from_raw_fd(fd) },
+    };
+    let watch = libc::kevent {
+        ident: libc::STDIN_FILENO as usize,
+        filter: libc::EVFILT_READ,
+        flags: libc::EV_ADD | libc::EV_CLEAR,
+        fflags: 0,
+        data: 0,
+        udata: ptr::null_mut(),
+    };
+    // SAFETY: one valid change in, no room for events out.
+    if unsafe { libc::kevent(kq.as_raw_fd(), &watch, 1, ptr::null_mut(), 0, ptr::null()) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    loop {
+        let mut event = watch;
+        // SAFETY: no changes in, room for one event out, no timeout.
+        let n = unsafe { libc::kevent(kq.as_raw_fd(), ptr::null(), 0, &mut event, 1, ptr::null()) };
+        if n > 0 && event.flags & libc::EV_ERROR != 0 {
+            return Err(io::Error::from_raw_os_error(event.data as i32));
+        }
+        if n > 0 && event.flags & libc::EV_EOF != 0 {
+            return Ok(());
+        }
+        if n < 0 {
+            let e = io::Error::last_os_error();
+            if e.kind() != io::ErrorKind::Interrupted {
+                return Err(e);
+            }
+        }
+    }
 }
 
 fn run() -> io::Result<()> {
